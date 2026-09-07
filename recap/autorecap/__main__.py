@@ -17,7 +17,7 @@ import time
 import traceback
 
 from ..shared.hook_io import DEBOUNCE_SECONDS, DEFAULT_TIMEOUT, emit_continue, log
-from ..shared.fs import _resolve_under_vault, plugin_root, read_text
+from ..shared.fs import plugin_root, read_text
 from ..shared.paths import debounce_marker, session_log_path
 from ..shared.cursor import write_cursor
 from .context import RecapContext
@@ -26,34 +26,21 @@ from .daily_note_resolver import DailyNoteResolver
 from .daily_note import DailyNote
 from .gate import is_substantive
 from .transcript import slice_transcript
-from .block import extract_kpt_section, extract_timeline_bullets, topic_from_kpt
+from .block import extract_timeline_bullets
 
 
-def load_vault_context(vault: pathlib.Path) -> tuple[str, str]:
-    """Return (readme_excerpt, daily_template_excerpt).
+def load_vault_context(vault: pathlib.Path) -> str:
+    """Return the README excerpt used for daily-note discovery.
 
     The daily-note folder and filename are not pre-resolved here — they are
     discovered by Claude from the README inside the same prompt that composes
     the recap block (see parse_discovery / main).
-
-    - KG_DAILY_TEMPLATE: optional env var. Relative to $KG_VAULT or absolute.
-      When unset, the template excerpt is empty and the prompt instructs
-      Claude to fall back to the README's description of the daily-note
-      structure.
     """
     readme_parts: list[str] = []
     for candidate in (vault / "README.md", vault.parent / "README.md"):
         if candidate.is_file():
             readme_parts.append(f"--- {candidate} ---\n{read_text(candidate)}")
-    readme_excerpt = "\n\n".join(readme_parts) or "(no README found)"
-
-    template_path = _resolve_under_vault(vault, os.environ.get("KG_DAILY_TEMPLATE"))
-    template_excerpt = (
-        read_text(template_path) if template_path and template_path.is_file()
-        else ""
-    )
-
-    return readme_excerpt, template_excerpt
+    return "\n\n".join(readme_parts) or "(no README found)"
 
 
 def compose_prompt(template: str, substitutions: dict[str, str]) -> str:
@@ -122,13 +109,9 @@ class AutoRecap:
             daily_path, insert_before = None, ""  # resolved from discovery after the LLM call
 
         timeline_bullets = agg.timeline     # whole-session deterministic timeline; LLM may upgrade it below
-        kpt_section: str | None = None
-        topic = ""
 
         if substantive:
-            readme, template = load_vault_context(ctx.vault)
-            prior_block = self._read_existing_block(daily_path, ctx.sid8) if daily_path else ""
-            prior_kpt = extract_kpt_section(prior_block) or ""
+            readme = load_vault_context(ctx.vault)
             tslice = slice_transcript(ctx.transcript_path, ctx.since, ctx.today_str)
             timeline_text = "\n".join(agg.timeline)
 
@@ -141,10 +124,8 @@ class AutoRecap:
                 return
             prompt = compose_prompt(tmpl_path.read_text(encoding="utf-8"), {
                 "TODAY": ctx.today_str,
-                "DAILY_TEMPLATE": template,
                 "VAULT_README": readme,
                 "EXISTING_DAILY": (daily_path.read_text(encoding="utf-8") if daily_path and daily_path.is_file() else "(file does not exist yet)"),
-                "PRIOR_KPT": prior_kpt,
                 "TIMELINE": timeline_text,
                 "TRANSCRIPT_SLICE": tslice or "(transcript unavailable)",
             })
@@ -159,11 +140,6 @@ class AutoRecap:
                 ai_bullets = extract_timeline_bullets(out)
                 if ai_bullets:
                     timeline_bullets = ai_bullets
-                kpt_section = extract_kpt_section(out)
-                if kpt_section is None:
-                    log("claude output missing ### KPT section; writing Timeline only")
-                else:
-                    topic = topic_from_kpt(kpt_section)
             elif pre is None:
                 log("claude failed and no pre-resolved daily path -> skip")
                 return
@@ -171,8 +147,8 @@ class AutoRecap:
 
         note = DailyNote(ctx.vault, daily_path)
         if not note.apply_block(
-            ctx.sid8, start_hhmm=agg.start_hhmm, end_hhmm=agg.end_hhmm, topic=topic,
-            timeline_bullets=timeline_bullets, kpt_section=kpt_section, insert_before=insert_before,
+            ctx.sid8, start_hhmm=agg.start_hhmm, end_hhmm=agg.end_hhmm,
+            timeline_bullets=timeline_bullets, insert_before=insert_before,
         ):
             write_cursor(ctx.sid8, agg.end_hhmm)
             return
@@ -181,7 +157,7 @@ class AutoRecap:
             log("vault not in a git repo - skipping commit; cursor updated")
             write_cursor(ctx.sid8, agg.end_hhmm)
             return
-        note.commit(ctx.sid8, agg.start_hhmm, topic or None)
+        note.commit(ctx.sid8)
         write_cursor(ctx.sid8, agg.end_hhmm)
         if substantive:
             resolver.persist_cache()
@@ -193,16 +169,6 @@ class AutoRecap:
         except OSError:
             pass
 
-    @staticmethod
-    def _read_existing_block(daily_path, sid8: str) -> str:
-        try:
-            text = daily_path.read_text(encoding="utf-8") if daily_path and daily_path.is_file() else ""
-        except OSError:
-            return ""
-        from .block import _open_re, _close_re
-        om = _open_re(sid8).search(text)
-        cm = _close_re(sid8).search(text)
-        return text[om.start():cm.end()] if om and cm and cm.start() > om.start() else ""
 
 def main() -> None:
     try:

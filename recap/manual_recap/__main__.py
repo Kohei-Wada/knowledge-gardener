@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Manual recap CLI — drive the two-layer kg-recap-sid block from garden-recap.
+"""Manual recap CLI — drive the kg-recap-sid block from garden-recap.
 
 Unlike the Stop hook (recap.autorecap), this is invoked interactively by the
-garden-recap skill: the assistant authors the KPT, so there is no headless
-claude call. It reuses the same aggregator, block surgery, daily-note writer,
-and cursor as auto-recap, so manual and auto recaps converge on one block.
+garden-recap skill, so there is no headless claude call. It reuses the same
+aggregator, block surgery, daily-note writer, and cursor as auto-recap, so
+manual and auto recaps converge on one block.
 """
 from __future__ import annotations
 
@@ -16,18 +16,17 @@ import pathlib
 import sys
 
 from ..aggregate.__main__ import aggregate_session, list_logs_for_date, select_logs
-from ..autorecap.block import extract_timeline_bullets, topic_from_kpt, upsert_session_block
+from ..autorecap.block import extract_timeline_bullets, upsert_session_block
 from ..autorecap.daily_note import DailyNote
 from ..shared.cursor import write_cursor
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Update the per-session two-layer recap block (manual garden-recap path)."
+        description="Update the per-session recap block (manual garden-recap path)."
     )
     p.add_argument("--sid", required=True, help="Session sid8 to recap.")
     p.add_argument("--daily-path", required=True, help="Absolute path to today's daily note (resolved by the skill).")
-    p.add_argument("--kpt-file", required=True, help="File containing the ### KPT section to write.")
     p.add_argument("--timeline-file", default="", help="File with the assistant-authored ### Timeline section. Omitted -> deterministic filtered timeline.")
     p.add_argument("--insert-before", default="", help="Heading to insert a NEW block before (default: append at EOF).")
     p.add_argument("--dry-run", action="store_true", help="Print the daily-note diff and exit without writing.")
@@ -41,14 +40,6 @@ def main(argv: list[str] | None = None) -> int:
     vault = os.environ.get("KG_VAULT")
     if not vault:
         sys.stderr.write("KG_VAULT unset\n")
-        return 2
-    try:
-        kpt = pathlib.Path(args.kpt_file).read_text(encoding="utf-8").strip()
-    except OSError as e:
-        sys.stderr.write(f"cannot read --kpt-file: {e}\n")
-        return 2
-    if not kpt:
-        sys.stderr.write("empty KPT\n")
         return 2
 
     today = _dt.date.today()
@@ -72,12 +63,11 @@ def main(argv: list[str] | None = None) -> int:
         bullets = extract_timeline_bullets(authored)
         if bullets:
             timeline = bullets
-    topic = topic_from_kpt(kpt)
     daily_path = pathlib.Path(args.daily_path)
     existing = daily_path.read_text(encoding="utf-8") if daily_path.is_file() else ""
     new = upsert_session_block(
-        existing, args.sid, start_hhmm=start, end_hhmm=end, topic=topic,
-        timeline_bullets=timeline, kpt_section=kpt, insert_before=args.insert_before,
+        existing, args.sid, start_hhmm=start, end_hhmm=end,
+        timeline_bullets=timeline, insert_before=args.insert_before,
     )
 
     if args.dry_run:
@@ -90,11 +80,11 @@ def main(argv: list[str] | None = None) -> int:
 
     note = DailyNote(pathlib.Path(vault), daily_path)
     changed = note.apply_block(
-        args.sid, start_hhmm=start, end_hhmm=end, topic=topic,
-        timeline_bullets=timeline, kpt_section=kpt, insert_before=args.insert_before,
+        args.sid, start_hhmm=start, end_hhmm=end,
+        timeline_bullets=timeline, insert_before=args.insert_before,
     )
     if changed and not args.no_commit and note.has_repo:
-        note.commit(args.sid, start, topic or "session recap")
+        note.commit(args.sid)
     write_cursor(args.sid, end)
     return 0
 

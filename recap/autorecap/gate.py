@@ -15,7 +15,7 @@ def _int_env(env: Mapping[str, str], key: str, default: int) -> int:
 
 def is_substantive(durable_change: bool, entry_count: int, duration_min: int,
                    env: Mapping[str, str]) -> bool:
-    """Lenient gate: durable change OR activity above a floor warrants a KPT regen."""
+    """Lenient gate: durable change OR activity above a floor warrants an LLM upgrade of the Timeline."""
     if durable_change:
         return True
     min_calls = _int_env(env, "KG_RECAP_MIN_CALLS", DEFAULT_MIN_CALLS)

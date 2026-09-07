@@ -1,7 +1,7 @@
 {
   "name": "knowledge-gardener",
   "description": "Format-agnostic knowledge-base curation skill. Decides WHEN to capture, update, link, or prune long-term knowledge — defers HOW (format/conventions) to the vault's own README.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "author": {
     "name": "Kohei Wada"
   },
