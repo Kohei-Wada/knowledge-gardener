@@ -157,7 +157,7 @@ class AutoRecap:
             log("vault not in a git repo - skipping commit; cursor updated")
             write_cursor(ctx.sid8, agg.end_hhmm)
             return
-        note.commit(ctx.sid8, agg.start_hhmm, None)
+        note.commit(ctx.sid8)
         write_cursor(ctx.sid8, agg.end_hhmm)
         if substantive:
             resolver.persist_cache()

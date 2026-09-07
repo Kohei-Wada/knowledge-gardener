@@ -154,6 +154,19 @@ def test_pre_existing_kpt_in_an_old_block_is_left_in_place():
     assert "- 09:30  Edit b.py" in out      # timeline refreshed
     assert "- Keep: a" in out               # stale KPT untouched
 
+    # Byte-idempotency across the mixed-vault window: re-applying identical
+    # inputs to a block that still carries a stale KPT must not keep churning.
+    again = upsert_session_block(
+        out, "abc12345", start_hhmm="09:00", end_hhmm="09:30",
+        timeline_bullets=["- 09:30  Edit b.py"],
+    )
+    assert again == out
+    third = upsert_session_block(
+        again, "abc12345", start_hhmm="09:00", end_hhmm="09:30",
+        timeline_bullets=["- 09:30  Edit b.py"],
+    )
+    assert third == again
+
 
 def test_extract_timeline_bullets_returns_none_without_a_section():
     assert extract_timeline_bullets("no timeline here") is None

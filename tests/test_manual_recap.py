@@ -69,6 +69,9 @@ def test_updates_an_existing_pre_upgrade_block(tmp_path, monkeypatch):
     text = daily.read_text(encoding="utf-8")
     assert text.count("<!-- kg-recap-sid:manual01 -->") == 1
     assert "auto topic" not in text          # topic dropped on rewrite
+    assert "## Session 09:00〜09:30" in text  # end extended from the session log
+    assert "- 09:00  Edit a.md" in text       # timeline bullet from the session log
+    assert "- 09:30  Write b.md" in text
     assert "- Keep: auto が書いた" in text    # stale KPT left for the vault migration
 
 

@@ -423,6 +423,40 @@ def test_llm_failure_writes_deterministic_timeline(tmp_path):
     assert "### KPT" not in content       # no KPT on LLM failure
 
 
+def test_claude_output_without_a_timeline_section_falls_back_to_deterministic(tmp_path):
+    """Substantive Stop, pre-resolved path (compose prompt), claude exits 0 but
+    returns output with NO `### Timeline` section → extract_timeline_bullets
+    returns None and the deterministic mechanical bullets are written instead.
+
+    Distinct from test_llm_failure_writes_deterministic_timeline, whose fake
+    claude exits non-zero (call_claude returns None), and from
+    test_topicless_then_substantive_keeps_timeline, whose garbage-output Stop is
+    non-substantive so claude is never invoked at all.
+    """
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    # Exit 0, non-empty, but no `### Timeline` heading anywhere.
+    fake = make_fake_claude(tmp_path, "just some prose, no timeline section")
+    env = happy_env(vault, fake)
+    # Pre-resolve the path so the compose prompt runs and the write does not
+    # depend on a kg-discovery block the garbage output does not carry.
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert res.returncode == 0
+    assert_continue(res.stdout)
+    note = daily / f"{today}.md"
+    assert note.exists()
+    content = note.read_text()
+    assert "<!-- kg-recap-sid:testabcd -->" in content
+    assert "### Timeline" in content
+    assert "- 09:00  Edit a.md" in content              # deterministic bullets used
+    assert "just some prose" not in content             # raw model output never leaks in
+    assert "11:00–11:05 a/b.py を編集" not in content    # not the AI TIMELINE_BODY bullet
+    assert "### KPT" not in content
+
+
 def test_no_op_when_claude_nonzero_exit(tmp_path):
     """LLM failure with NO pre-resolved path (cold-cache, no KG_DAILY_FILENAME) → no-op."""
     vault, daily, _ = make_vault(tmp_path)
@@ -719,6 +753,10 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
     # placeholder set — no DAILY_TEMPLATE, PRIOR_KPT, or VAULT_README).
     assert "kg-recap-sid" not in prompt_text
     assert "- 09:00  Edit a.md" in prompt_text
+    assert "{{" not in prompt_text, (
+        "every {{...}} placeholder must be substituted; a leftover literal "
+        "(e.g. {{PRIOR_KPT}}) would reach the model unsubstituted"
+    )
 
 
 def test_readme_change_invalidates_cache(tmp_path):

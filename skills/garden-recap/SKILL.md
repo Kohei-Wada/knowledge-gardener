@@ -7,7 +7,7 @@ description: Use when the user wants to wrap up the current Claude Code session 
 
 Capture the current session's work — what happened (Timeline) — into today's daily note. Designed to be invoked **before** the user ends a session so future sessions (today or later) can recover context without re-reading the entire transcript.
 
-The normal path **drives the `recap.manual_recap` CLI** instead of hand-editing the daily note. The CLI upserts a per-session `kg-recap-sid:{sid8}` block — an append-only `### Timeline` — the SAME block the auto-recap `Stop` hook maintains. Manual and auto recaps therefore converge on one block per session.
+The normal path **drives the `recap.manual_recap` CLI** instead of hand-editing the daily note. The CLI upserts a per-session `kg-recap-sid:{sid8}` block — a `### Timeline` the CLI replaces wholesale on each run — the SAME block the auto-recap `Stop` hook maintains. Manual and auto recaps therefore converge on one block per session.
 
 ## When to Use
 
@@ -100,7 +100,7 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m recap.manual_recap \
   --sid <sid8> --daily-path <abs daily path>
 ```
 
-The CLI writes the Timeline block (append-with-dedup), commits (`water: <date> daily auto-recap (<sid8>)`), and advances the per-session cursor. (`--timeline-file` is optional; omitting it falls back to the deterministic filtered timeline aggregated from the capture log, as described in Step 2.)
+The CLI writes the Timeline block (replacing the Timeline section wholesale each run — the caller owns the full bullet list), commits (`water: <date> daily auto-recap (<sid8>)`), and advances the per-session cursor. (`--timeline-file` is optional; omitting it falls back to the deterministic filtered timeline aggregated from the capture log, as described in Step 2.)
 
 Don't `--no-verify` and don't hand-edit the block afterward. If you need a different insertion point for a brand-new block, pass `--insert-before <heading>` (default appends at EOF); to write without committing, pass `--no-commit`.
 
@@ -109,14 +109,14 @@ Don't `--no-verify` and don't hand-edit the block afterward. If you need a diffe
 - **No daily-note convention documented**: the vault README doesn't tell you where daily notes go or how they're named → stop and ask the user; do not invent a location.
 - **Daily folder doesn't exist** (vault layout differs from expectation): stop and surface the gap. Suggest the user pick the correct folder or update the README.
 - **No capture log** (`sessions` empty or `entry_count` 0): take the **No-log fallback (recollection)** under Step 2, then stop. Don't try to force the CLI.
-- **Block already exists for this session** (earlier manual recap, or an auto `Stop` already ran): re-running is safe — the CLI appends-with-dedup on the Timeline. Review the `--dry-run` diff before applying.
+- **Block already exists for this session** (earlier manual recap, or an auto `Stop` already ran): re-running is safe — the CLI replaces the Timeline wholesale with the freshly aggregated (or `--timeline-file`-authored) bullet list each time. Review the `--dry-run` diff before applying; if you authored a Timeline via `--timeline-file` earlier, re-pass it or that content is lost on the next run.
 - **Session inventory turns up nothing meaningful**: tell the user "nothing significant to recap" rather than padding the daily note with filler. Better to skip than to write noise.
 - **Pre-commit fails inside the CLI commit** (e.g. broken link in the Timeline): fix the link via `--timeline-file` and re-run Step 4. Don't `--no-verify`.
 
 ## Key Principles
 
 - **Evidence over recollection.** "What happened" comes from the Timeline / `git log` / actual conversation, not paraphrased memory. The CLI's Timeline is aggregated from the capture log, so the factual layer is mechanically grounded.
-- **Preserve prior content on append.** Earlier Timeline entries are sacred. The CLI enforces this: Timeline is append-dedup. Add, don't replace.
+- **The CLI owns the whole Timeline, not just new bullets.** `upsert_session_block` replaces the `### Timeline` section wholesale on every run — the caller supplies the complete bullet list, not a delta. If you author a rich Timeline via `--timeline-file`, re-pass that file on every later run for the same session; omitting it lets the deterministic aggregation overwrite your authored content.
 - **One block per session.** Manual and auto recaps target the same `kg-recap-sid:{sid8}` block, so a session never ends up with two competing recaps.
 - **One commit per recap.** The CLI makes exactly one `water:` commit. The daily note may collect multiple sessions, but each recap is its own commit so history stays readable.
 - **Future-you reads this.** Write the Timeline so that next session opens the daily note and immediately knows what happened today without re-reading the transcript.

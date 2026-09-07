@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         timeline_bullets=timeline, insert_before=args.insert_before,
     )
     if changed and not args.no_commit and note.has_repo:
-        note.commit(args.sid, start, None)
+        note.commit(args.sid)
     write_cursor(args.sid, end)
     return 0
 

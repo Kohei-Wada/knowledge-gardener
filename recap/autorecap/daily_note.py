@@ -8,22 +8,10 @@ import subprocess
 from ..shared.hook_io import log
 from .block import upsert_session_block
 
-COMMIT_SUBJECT_LIMIT = 72
 
-
-def build_commit_subject(today: str, start_hhmm: str, topic: str | None, marker_key: str) -> str:
-    """Compose the auto-recap commit subject line.
-
-    With a topic: `water: {today} {HH:MM} 〜 {topic}`, truncated to 72 chars
-    with an ellipsis if needed.
-    Without a topic: keep the legacy `water: {today} daily auto-recap ({marker_key})` form.
-    """
-    if topic is None:
-        return f"water: {today} daily auto-recap ({marker_key})"
-    subject = f"water: {today} {start_hhmm} 〜 {topic}"
-    if len(subject) > COMMIT_SUBJECT_LIMIT:
-        subject = subject[: COMMIT_SUBJECT_LIMIT - 1] + "…"
-    return subject
+def build_commit_subject(today: str, marker_key: str) -> str:
+    """Compose the auto-recap commit subject line: `water: {today} daily auto-recap ({marker_key})`."""
+    return f"water: {today} daily auto-recap ({marker_key})"
 
 
 def run_git(args: list[str], cwd: pathlib.Path) -> tuple[int, str, str]:
@@ -45,8 +33,6 @@ def commit_and_push(
     repo_root: pathlib.Path,
     daily_path: pathlib.Path,
     marker_key: str,
-    start_hhmm: str,
-    topic: str | None,
 ) -> None:
     rel = daily_path.relative_to(repo_root) if str(daily_path).startswith(str(repo_root)) else daily_path
     # pre-commit (best-effort)
@@ -67,7 +53,7 @@ def commit_and_push(
         log(f"git add failed: {err[:200]!r}")
         return
     today = _dt.date.today().isoformat()
-    subject = build_commit_subject(today, start_hhmm, topic, marker_key)
+    subject = build_commit_subject(today, marker_key)
     code, _, err = run_git(
         ["commit", "-m", subject],
         repo_root,
@@ -123,7 +109,7 @@ class DailyNote:
             return False
         return True
 
-    def commit(self, marker_key: str, start_hhmm: str, topic: str | None) -> None:
+    def commit(self, marker_key: str) -> None:
         if self._repo_root is None:
             return
-        commit_and_push(self._repo_root, self._daily_path, marker_key, start_hhmm, topic)
+        commit_and_push(self._repo_root, self._daily_path, marker_key)
