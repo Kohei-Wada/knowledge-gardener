@@ -76,12 +76,16 @@ Spacing normalisation (`\n+(### )` → `\n\n\1`) stays — Timeline is still a `
 
 ### Prompts
 
-- `recap/autorecap/prompts/auto_recap_compose_prompt.md` — **deleted**. It exists solely to compose a KPT.
-- `recap/autorecap/prompts/auto_recap_prompt.md` — the output contract emits the `kg-discovery` block followed by `### Timeline` only. The "How to revise the KPT" section, the `{{PRIOR_KPT}}` input, and the `{{DAILY_TEMPLATE}}` input (present only to convey the KPT structure) are removed.
+Both prompts survive — they are the two path variants, not a Timeline one and a KPT one. `auto_recap_prompt.md` runs when the daily-note path is unknown and must be discovered from the vault README; `auto_recap_compose_prompt.md` runs on the warm-cache path where the path is already resolved. Each currently emits a Timeline **and** a KPT; each loses the KPT.
+
+- `recap/autorecap/prompts/auto_recap_prompt.md` — the output contract emits the `kg-discovery` block followed by `### Timeline` only.
+- `recap/autorecap/prompts/auto_recap_compose_prompt.md` — the output contract emits `### Timeline` only.
+
+In both: the "How to revise the KPT" section, the KPT lines of the output contract, the per-category bullet cap, the `{{PRIOR_KPT}}` input, and the `{{DAILY_TEMPLATE}}` input (present only to convey the KPT structure) are removed. The Timeline rules and the facts-only rules are untouched.
 
 ### Auto-recap entry point (`recap/autorecap/__main__.py`)
 
-Remove the `prior_kpt` extraction, the `PRIOR_KPT` / `DAILY_TEMPLATE` template variables, the `extract_kpt_section` call on the model output and its "missing ### KPT" warning, and the `topic` local. `apply_block` and `commit` are called without `topic` / `kpt_section`.
+Remove the `prior_kpt` extraction, the `PRIOR_KPT` and `DAILY_TEMPLATE` template variables (and the now-unused `load_vault_context` template return), the `extract_kpt_section` call on the model output and its "missing ### KPT" warning, and the `topic` local. `apply_block` and `commit` are called without `topic` / `kpt_section`.
 
 The substance gate keeps its current meaning: it decides whether a Stop is substantive enough to invoke the model. With KPT gone it now gates Timeline regeneration only.
 
