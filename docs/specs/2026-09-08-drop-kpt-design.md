@@ -58,7 +58,7 @@ With `Keep` gone there is no topic source. Deriving one from the first Timeline 
 
 **Headings become the time range alone**: `## Session 06:18〜06:28`.
 
-Consequence: `daily_note.build_commit_subject` already handles `topic is None` by falling back to `water: {today} daily auto-recap ({marker_key})`. Callers pass `None`; that legacy form becomes the only commit subject. No change to `build_commit_subject` itself.
+Consequence: `daily_note.build_commit_subject` handled `topic is None` by falling back to `water: {today} daily auto-recap ({marker_key})`. That form becomes the only commit subject, so the topic-bearing branch, its 72-char truncation, and the `topic` and `start_hhmm` parameters threading through `DailyNote.commit` and `commit_and_push` are all dead and are deleted — the plan's no-backward-compat-shims constraint governs. `build_commit_subject` reduces to `(today, marker_key)`.
 
 ### Block machinery (`recap/autorecap/block.py`)
 
