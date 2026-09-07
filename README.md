@@ -114,7 +114,6 @@ export KG_AUTO_RECAP=1
 # the vault README at each Stop event.
 export KG_DAILY_FOLDER='<folder-relative-to-KG_VAULT>'              # override discovery
 export KG_DAILY_FILENAME='<filename for today, e.g. 2026-05-21.md>'  # override discovery
-export KG_DAILY_TEMPLATE='<path/to/daily-template.md>'              # extra context for Claude's recap composition
 export KG_DAILY_INSERT_BEFORE='## <heading the block must precede>' # override discovery; default = append at EOF
 # Substance gate — controls when the KPT section is (re)generated
 export KG_RECAP_MIN_CALLS=5    # tool-call threshold (default 5)

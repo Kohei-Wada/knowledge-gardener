@@ -24,7 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # intentionally generic — knowledge-gardener is format-agnostic, so the test
 # vault must not assume any real-world vault's folder naming.
 DAILY_FOLDER_REL = "daily"
-DAILY_TEMPLATE_REL = "template.md"
 
 
 def happy_env(vault: Path, fake_claude: Path) -> dict[str, str]:
@@ -34,7 +33,6 @@ def happy_env(vault: Path, fake_claude: Path) -> dict[str, str]:
         "KG_VAULT": str(vault),
         "KG_AUTO_RECAP_CLAUDE_CMD": str(fake_claude),
         "KG_DAILY_FOLDER": DAILY_FOLDER_REL,
-        "KG_DAILY_TEMPLATE": DAILY_TEMPLATE_REL,
     }
 
 
@@ -67,11 +65,11 @@ def make_fake_claude(
 
 
 def make_vault(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Set up a minimal vault with README + daily-notes folder + template. Returns (vault, daily_folder, repo_root).
+    """Set up a minimal vault with README + daily-notes folder. Returns (vault, daily_folder, repo_root).
 
     Folder names here are deliberately neutral (no real-world vault layout
-    references); auto-recap learns the layout from env vars (KG_DAILY_FOLDER,
-    KG_DAILY_TEMPLATE) so it never needs to know names like '04_DailyNotes'.
+    references); auto-recap learns the layout from env vars (KG_DAILY_FOLDER)
+    so it never needs to know names like '04_DailyNotes'.
     """
     repo = tmp_path / "vault-repo"
     vault = repo / "vault"
@@ -86,30 +84,6 @@ def make_vault(tmp_path: Path) -> tuple[Path, Path, Path]:
 
             ## Conventions
             - Daily notes live in `{DAILY_FOLDER_REL}/`, filename `YYYY-MM-DD.md`.
-            - KPT sub-sections (Keep / Problem / Try). Try must not be omitted.
-            """
-        )
-    )
-    (vault / DAILY_TEMPLATE_REL).write_text(
-        textwrap.dedent(
-            """\
-            ---
-            title: {{date}}
-            ---
-
-            ## KPT
-
-            ### Keep
-
-            -
-
-            ### Problem
-
-            -
-
-            ### Try
-
-            -
             """
         )
     )
@@ -159,17 +133,16 @@ def assert_continue(stdout: str) -> None:
     assert obj.get("suppressOutput") is True
 
 
-KPT_BODY = "### KPT\n\n- Keep: テストが書ける\n- Problem: (なし)\n- Try: 次回も green\n"
 TIMELINE_BODY = "### Timeline\n\n- 11:00–11:05 a/b.py を編集\n"
 
 
-def _canned_kpt_with_discovery(folder=DAILY_FOLDER_REL, filename=None,
+def _canned_recap_with_discovery(folder=DAILY_FOLDER_REL, filename=None,
                                filename_pattern="{date}.md", insert_before=""):
-    """Build a canned Claude output: kg-discovery block + ### Timeline + ### KPT section.
+    """Build a canned Claude output: kg-discovery block + ### Timeline section.
 
     The new (cold-cache) contract: Claude returns discovery metadata followed
-    by a `### Timeline` activity log and a `### KPT` section. Python assembles
-    the block markers and header around them.
+    by a `### Timeline` activity log. Python assembles the block markers and
+    header around them.
     """
     if filename is None:
         filename = f"{_dt.date.today().isoformat()}.md"
@@ -177,16 +150,16 @@ def _canned_kpt_with_discovery(folder=DAILY_FOLDER_REL, filename=None,
         "<!-- kg-discovery -->\n"
         f"folder: {folder}\nfilename: {filename}\n"
         f"filename_pattern: {filename_pattern}\ninsert_before: {insert_before}\n"
-        "<!-- /kg-discovery -->\n" + TIMELINE_BODY + KPT_BODY
+        "<!-- /kg-discovery -->\n" + TIMELINE_BODY
     )
 
 
-def _canned_kpt_only():
+def _canned_recap_timeline_only():
     """Canned output with NO kg-discovery block — the warm-cache compose path."""
-    return TIMELINE_BODY + KPT_BODY
+    return TIMELINE_BODY
 
 
-CANNED_RECAP = _canned_kpt_with_discovery()
+CANNED_RECAP = _canned_recap_with_discovery()
 
 
 # --- opt-in gate -------------------------------------------------------------
@@ -238,7 +211,7 @@ def test_writes_via_discovery_when_env_unset(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     # remove both env keys so only the kg-discovery block can resolve the path
     del env["KG_DAILY_FOLDER"]
@@ -254,7 +227,7 @@ def test_no_op_when_env_unset_and_no_discovery(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake = make_fake_claude(tmp_path, _canned_kpt_only())
+    fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -294,7 +267,7 @@ def test_logs_hint_when_discovery_prefixes_vault_basename(tmp_path):
     bad_folder = f"{vault.name}/{DAILY_FOLDER_REL}"
     fake = make_fake_claude(
         tmp_path,
-        _canned_kpt_with_discovery(folder=bad_folder),
+        _canned_recap_with_discovery(folder=bad_folder),
     )
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]  # force the discovery path
@@ -321,7 +294,7 @@ def test_env_override_wins_over_discovery(tmp_path):
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
     # Claude discovers DAILY_FOLDER_REL ("daily") but env points at "alt-daily"
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery(folder=DAILY_FOLDER_REL))
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery(folder=DAILY_FOLDER_REL))
     env = happy_env(vault, fake)
     env["KG_DAILY_FOLDER"] = "alt-daily"
     # the discovery's filename still drives the filename (no KG_DAILY_FILENAME set)
@@ -342,7 +315,7 @@ def test_insert_before_anchor_places_block_above_heading(tmp_path):
         "## Existing top\n\nsome body\n\n## Carry over\n\n- left for tomorrow\n",
         encoding="utf-8",
     )
-    fake = make_fake_claude(tmp_path, _canned_kpt_only())
+    fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
     env = happy_env(vault, fake)
     # Pre-resolve the path (folder+filename) so the env insert_before anchor is
     # honoured via the warm path rather than discovery.
@@ -363,34 +336,33 @@ def test_writes_session_block_on_happy_path(tmp_path):
     state = tmp_path / "state"
     write_session_log(state, "testabcd",
                       ["09:00 tool=Edit target=a.md", "09:05 tool=Bash target=git commit -m x"])
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=happy_env(vault, fake), state_home=state)
     assert res.returncode == 0
     content = (daily / f"{_dt.date.today().isoformat()}.md").read_text()
     assert "<!-- kg-recap-sid:testabcd -->" in content
     assert "### Timeline" in content
     assert "11:00–11:05 a/b.py を編集" in content   # AI timeline upgraded from canned output
-    assert "Keep: テストが書ける" in content
     assert "<!-- /kg-recap-sid:testabcd -->" in content
 
 
 def test_idempotent_replaces_existing_block(tmp_path):
     """Two substantive runs over the SAME window (cursor + debounce cleared) →
-    the KPT is replaced and the Timeline bullet is not duplicated."""
+    the AI Timeline is replaced, not duplicated."""
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake1 = make_fake_claude(tmp_path / "v1", _canned_kpt_with_discovery())
+    fake1 = make_fake_claude(tmp_path / "v1", _canned_recap_with_discovery())
     env = happy_env(vault, fake1)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
-    # second run with a different KPT but same sid → should REPLACE the KPT
-    kpt2 = "### KPT\n\n- Keep: 更新後のテスト\n- Problem: (なし)\n- Try: 次回も green\n"
+    # second run with a different AI timeline but same sid → should REPLACE it
+    timeline2 = "### Timeline\n\n- 11:00–11:05 更新後のタイムライン\n"
     updated = (
         "<!-- kg-discovery -->\n"
         f"folder: {DAILY_FOLDER_REL}\nfilename: {_dt.date.today().isoformat()}.md\n"
         "filename_pattern: {date}.md\ninsert_before: \n"
-        "<!-- /kg-discovery -->\n" + kpt2
+        "<!-- /kg-discovery -->\n" + timeline2
     )
     fake2 = make_fake_claude(tmp_path / "v2", updated)
     # bypass debounce by clearing marker; also clear cursor so the aggregator
@@ -402,41 +374,13 @@ def test_idempotent_replaces_existing_block(tmp_path):
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(fake2)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     content = (daily / f"{_dt.date.today().isoformat()}.md").read_text()
-    # one block, second KPT replaced the first, Timeline bullet not duplicated
+    # one block, second Timeline replaced the first, not duplicated
     assert content.count("<!-- kg-recap-sid:testabcd -->") == 1
-    assert "Keep: 更新後のテスト" in content
-    assert "Keep: テストが書ける" not in content
-    assert content.count("- 09:00  Edit a.md") == 1
+    assert "更新後のタイムライン" in content
+    assert "11:00–11:05 a/b.py を編集" not in content
 
 
 # --- error handling ---------------------------------------------------------
-
-def test_claude_output_without_kpt_writes_timeline_only(tmp_path):
-    """A substantive window whose claude output has no `### KPT` section still
-    gets a Timeline-only block (path is pre-resolved via env); no KPT is added."""
-    vault, daily, _ = make_vault(tmp_path)
-    state = tmp_path / "state"
-    today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake = make_fake_claude(tmp_path, "just some text, no KPT")
-    env = happy_env(vault, fake)
-    # Pre-resolve the path so we don't depend on the (KPT-less) claude output
-    # carrying a kg-discovery block.
-    env["KG_DAILY_FILENAME"] = f"{today}.md"
-    res = run_hook(
-        {"session_id": "testabcd-uuid"},
-        env_extra=env,
-        state_home=state,
-    )
-    assert res.returncode == 0
-    assert_continue(res.stdout)
-    note = daily / f"{today}.md"
-    assert note.exists()
-    content = note.read_text()
-    assert "<!-- kg-recap-sid:testabcd -->" in content
-    assert "### Timeline" in content
-    assert "### KPT" not in content
-
 
 def test_llm_success_uses_ai_timeline(tmp_path):
     """When the LLM returns a ### Timeline section, its bullets replace the
@@ -446,7 +390,7 @@ def test_llm_success_uses_ai_timeline(tmp_path):
     today = _dt.date.today().isoformat()
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
     # Canned output includes TIMELINE_BODY → AI timeline should be used.
-    fake = make_fake_claude(tmp_path, TIMELINE_BODY + KPT_BODY)
+    fake = make_fake_claude(tmp_path, TIMELINE_BODY)
     env = happy_env(vault, fake)
     env["KG_DAILY_FILENAME"] = f"{today}.md"
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -454,7 +398,7 @@ def test_llm_success_uses_ai_timeline(tmp_path):
     assert_continue(res.stdout)
     content = (daily / f"{today}.md").read_text()
     assert "11:00–11:05 a/b.py を編集" in content   # AI timeline used
-    assert "### KPT" in content
+    assert "### KPT" not in content
 
 
 def test_llm_failure_writes_deterministic_timeline(tmp_path):
@@ -537,7 +481,7 @@ def test_debounce_skips_rapid_reinvocation(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    canned = _canned_kpt_with_discovery()
+    canned = _canned_recap_with_discovery()
     fake = make_fake_claude(tmp_path, canned)
     env = happy_env(vault, fake)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -546,25 +490,27 @@ def test_debounce_skips_rapid_reinvocation(tmp_path):
     # immediate re-invocation → debounce should skip
     time.sleep(0.1)
     # alter the fake output so we can detect if it ran
-    fake2 = make_fake_claude(tmp_path / "v2", canned.replace("テストが書ける", "should not appear"))
+    fake2 = make_fake_claude(tmp_path / "v2", canned.replace("a/b.py を編集", "should not appear"))
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(fake2)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
     content = (daily / f"{today}.md").read_text()
     assert "should not appear" not in content
-    assert "テストが書ける" in content
+    assert "a/b.py を編集" in content
 
 
 # --- git commit -------------------------------------------------------------
 
-def test_commit_subject_includes_topic_from_kpt(tmp_path):
-    """Commit subject's topic comes from the KPT's first `Keep:` bullet."""
+def test_commit_subject_uses_the_marker_key_form(tmp_path):
+    """With no topic source left, every commit subject takes the legacy
+    `water: {today} daily auto-recap ({marker_key})` form."""
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    sid8 = "subjfrm1"
+    write_session_log(state, sid8, ["09:00 tool=Edit target=a.md"])
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     run_hook(
-        {"session_id": "testabcd-uuid"},
+        {"session_id": sid8 + "-uuid"},
         env_extra=happy_env(vault, fake),
         state_home=state,
     )
@@ -576,38 +522,7 @@ def test_commit_subject_includes_topic_from_kpt(tmp_path):
         check=True,
     )
     today = _dt.date.today().isoformat()
-    # canned KPT's first Keep bullet is `- Keep: テストが書ける` → topic, start = 09:00
-    assert proc.stdout.strip() == f"water: {today} 09:00 〜 テストが書ける"
-
-
-def test_commit_subject_falls_back_when_kpt_missing(tmp_path):
-    """A substantive window with no `### KPT` section → topic "" → marker-key
-    fallback subject using the BARE sid8."""
-    vault, daily, repo = make_vault(tmp_path)
-    state = tmp_path / "state"
-    write_session_log(state, "noheadng", ["09:00 tool=Edit target=a.md"])
-    today = _dt.date.today().isoformat()
-    # discovery so the path resolves, but NO `### KPT` section → topic "".
-    headless_block = (
-        "<!-- kg-discovery -->\n"
-        f"folder: {DAILY_FOLDER_REL}\nfilename: {today}.md\n"
-        "filename_pattern: {date}.md\ninsert_before: \n"
-        "<!-- /kg-discovery -->\n"
-    )
-    fake = make_fake_claude(tmp_path, headless_block)
-    run_hook(
-        {"session_id": "noheadng-uuid"},
-        env_extra=happy_env(vault, fake),
-        state_home=state,
-    )
-    proc = subprocess.run(
-        ["git", "log", "-1", "--pretty=%s"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert proc.stdout.strip() == f"water: {today} daily auto-recap (noheadng)"
+    assert proc.stdout.strip() == f"water: {today} daily auto-recap ({sid8})"
 
 
 # --- per-Stop block accumulation --------------------------------------------
@@ -618,14 +533,14 @@ def test_two_stops_coalesce_into_one_block(tmp_path):
     sid8 = "twostops"
     today = _dt.date.today()
     write_session_log(state, sid8, ["09:00 tool=Edit target=a.md"])
-    fake1 = make_fake_claude(tmp_path / "f1", _canned_kpt_with_discovery())
+    fake1 = make_fake_claude(tmp_path / "f1", _canned_recap_with_discovery())
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake1), state_home=state)
 
     sessions = state / "knowledge-gardener" / "sessions"
     with (sessions / f"{today.isoformat()}-{sid8}.log").open("a") as fh:
         fh.write("10:30 tool=Edit target=b.md\n")
     (sessions / f".last-recap-{sid8}").unlink(missing_ok=True)
-    fake2 = make_fake_claude(tmp_path / "f2", _canned_kpt_only())
+    fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake2), state_home=state)
 
     text = (daily / f"{today.isoformat()}.md").read_text()
@@ -635,7 +550,7 @@ def test_two_stops_coalesce_into_one_block(tmp_path):
     # Second stop's canned output has TIMELINE_BODY → AI timeline replaces deterministic;
     # the block carries the latest whole-session Timeline from the LLM output.
     assert "11:00–11:05 a/b.py を編集" in text
-    assert "### KPT" in text
+    assert "### KPT" not in text
     assert (sessions / f"{sid8}.cursor").read_text().strip() == "10:30"
 
 
@@ -649,24 +564,24 @@ def test_topicless_then_substantive_keeps_timeline(tmp_path):
     # Stop 1: non-substantive (2 read-only calls) → Timeline-only, no topic, no claude
     write_session_log(state, sid8, ["09:00 tool=mcp__Notion__notion-fetch target=x",
                                     "09:00 tool=WebSearch target=y"])
-    fake1 = make_fake_claude(tmp_path / "f1", "### KPT\n- Keep: NOPE\n- Problem: -\n- Try: -\n")
+    fake1 = make_fake_claude(tmp_path / "f1", "no timeline section here")
     run_hook({"session_id": sid8 + "-uuid"},
              env_extra={**happy_env(vault, fake1), **env_common}, state_home=state)
     note = daily / f"{today.isoformat()}.md"
     assert "### Timeline" in note.read_text()
-    # Stop 2: substantive (Edit) → KPT + topic; must NOT eat the Timeline heading
+    # Stop 2: substantive (Edit); must NOT eat the Timeline heading
     sessions = state / "knowledge-gardener" / "sessions"
     with (sessions / f"{today.isoformat()}-{sid8}.log").open("a") as fh:
         fh.write("10:00 tool=Edit target=a.md\n")
     (sessions / f".last-recap-{sid8}").unlink(missing_ok=True)
-    fake2 = make_fake_claude(tmp_path / "f2", _canned_kpt_only())
+    fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
     run_hook({"session_id": sid8 + "-uuid"},
              env_extra={**happy_env(vault, fake2), **env_common}, state_home=state)
     text = note.read_text()
     assert "### Timeline" in text                         # heading survived the update
     # Second stop's canned output has TIMELINE_BODY → AI timeline replaces deterministic.
     assert "11:00–11:05 a/b.py を編集" in text
-    assert "### KPT" in text                              # KPT section added by substantive stop
+    assert "### KPT" not in text
     assert text.count(f"<!-- kg-recap-sid:{sid8} -->") == 1
 
 
@@ -678,7 +593,7 @@ def test_nonsubstantive_stop_appends_timeline_without_calling_claude(tmp_path):
     write_session_log(state, sid8,
                       ["09:00 tool=mcp__Notion__notion-fetch target=x",
                        "09:00 tool=WebSearch target=y"])
-    fake = make_fake_claude(tmp_path, "### KPT\n- Keep: SHOULD_NOT_APPEAR\n- Problem: -\n- Try: -\n")
+    fake = make_fake_claude(tmp_path, "SHOULD_NOT_APPEAR")
     env = happy_env(vault, fake)
     # A non-substantive window never spends an LLM discovery call, so it needs a
     # pre-resolved path (folder+filename) for the Timeline-only write to land.
@@ -701,7 +616,7 @@ def test_rerun_same_window_is_idempotent(tmp_path):
     today = _dt.date.today()
 
     write_session_log(state, sid8, ["11:00 tool=Edit target=c.md"])
-    fake = make_fake_claude(tmp_path / "fake", _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path / "fake", _canned_recap_with_discovery())
     # First run.
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake), state_home=state)
     # Clear debounce to force the second run through the pipeline.
@@ -742,7 +657,7 @@ def test_miss_path_writes_discovery_cache(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]  # force the discovery path
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -777,11 +692,11 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
         "discovered_at": "2026-01-01T00:00:00",
     }))
 
-    # Compose-only fake: returns just the ### KPT section, no kg-discovery metadata.
+    # Compose-only fake: returns just a ### Timeline section, no kg-discovery metadata.
     recorded = tmp_path / "claude-prompt.txt"
     fake = make_fake_claude(
         tmp_path,
-        _canned_kpt_only(),
+        _canned_recap_timeline_only(),
         record_prompt_to=recorded,
     )
     env = happy_env(vault, fake)
@@ -800,7 +715,8 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
         "compose-only prompt must not embed the vault README"
     )
     # The compose prompt no longer carries a marker; it carries the {{...}}-
-    # substituted KPT inputs (the mechanical Timeline among them).
+    # substituted TODAY / TIMELINE / TRANSCRIPT_SLICE inputs (the reduced
+    # placeholder set — no DAILY_TEMPLATE, PRIOR_KPT, or VAULT_README).
     assert "kg-recap-sid" not in prompt_text
     assert "- 09:00  Edit a.md" in prompt_text
 
@@ -824,7 +740,7 @@ def test_readme_change_invalidates_cache(tmp_path):
         "discovered_at": "2026-01-01T00:00:00",
     }))
 
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -848,7 +764,7 @@ def test_corrupted_cache_falls_back_to_discovery(tmp_path):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text("{not json")
 
-    fake = make_fake_claude(tmp_path, _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -889,7 +805,7 @@ def test_legacy_bare_sid_block_left_untouched(tmp_path):
     daily_path.write_text(legacy_block, encoding="utf-8")
 
     write_session_log(state, sid8, ["14:00 tool=Edit target=d.md"])
-    fake = make_fake_claude(tmp_path / "fake", _canned_kpt_with_discovery())
+    fake = make_fake_claude(tmp_path / "fake", _canned_recap_with_discovery())
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake), state_home=state)
 
     text = daily_path.read_text()

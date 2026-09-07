@@ -100,13 +100,12 @@ class DailyNote:
     def has_repo(self) -> bool:
         return self._repo_root is not None
 
-    def apply_block(self, sid8: str, *, start_hhmm: str, end_hhmm: str, topic: str,
-                    timeline_bullets: list[str], kpt_section: str | None,
-                    insert_before: str) -> bool:
+    def apply_block(self, sid8: str, *, start_hhmm: str, end_hhmm: str,
+                    timeline_bullets: list[str], insert_before: str) -> bool:
         existing = self._daily_path.read_text(encoding="utf-8") if self._daily_path.exists() else ""
         new = upsert_session_block(
-            existing, sid8, start_hhmm=start_hhmm, end_hhmm=end_hhmm, topic=topic,
-            timeline_bullets=timeline_bullets, kpt_section=kpt_section, insert_before=insert_before,
+            existing, sid8, start_hhmm=start_hhmm, end_hhmm=end_hhmm,
+            timeline_bullets=timeline_bullets, insert_before=insert_before,
         )
         if new == existing:
             return False

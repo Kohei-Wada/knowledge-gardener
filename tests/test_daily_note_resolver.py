@@ -131,12 +131,12 @@ def test_resolver_persist_cache_writes_on_miss(monkeypatch, tmp_path):
     assert written["discovery"]["folder"] == "04_DailyNotes"
 
 
-def _apply(note, sid8="abcd1234", *, start="09:00", end="09:30", topic="x",
-           timeline=None, kpt="### KPT\n\n- Keep: ok\n", insert_before=""):
+def _apply(note, sid8="abcd1234", *, start="09:00", end="09:30",
+           timeline=None, insert_before=""):
     return note.apply_block(
-        sid8, start_hhmm=start, end_hhmm=end, topic=topic,
+        sid8, start_hhmm=start, end_hhmm=end,
         timeline_bullets=timeline if timeline is not None else ["- 09:00  Edit a.md"],
-        kpt_section=kpt, insert_before=insert_before,
+        insert_before=insert_before,
     )
 
 
@@ -152,7 +152,7 @@ def test_daily_note_apply_block_writes_file(tmp_path):
     assert "<!-- kg-recap-sid:abcd1234 -->" in text
     assert "### Timeline" in text
     assert "- 09:00  Edit a.md" in text
-    assert "### KPT" in text
+    assert "### KPT" not in text
 
 
 def test_daily_note_apply_block_noop_when_identical(tmp_path):
