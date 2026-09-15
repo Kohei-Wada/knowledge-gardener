@@ -79,8 +79,7 @@ def test_resolver_pre_resolve_hits_via_env(monkeypatch, tmp_path):
     r = daily_note_resolver.DailyNoteResolver(ctx)
     pre = r.pre_resolve()
     assert pre is not None
-    daily_path, _ = pre
-    assert daily_path == vault / "04_DailyNotes" / "2026-05-29.md"
+    assert pre.path == vault / "04_DailyNotes" / "2026-05-29.md"
     assert r.pre_resolved is True
 
 
@@ -108,9 +107,8 @@ def test_resolver_resolve_from_discovery(monkeypatch, tmp_path):
     )
     res = r.resolve_from_discovery(claude_out)
     assert res is not None
-    daily_path, insert_before = res
-    assert daily_path == vault / "04_DailyNotes" / "2026-05-29.md"
-    assert insert_before == ""
+    assert res.path == vault / "04_DailyNotes" / "2026-05-29.md"
+    assert res.insert_before == ""
 
 
 def test_resolver_persist_cache_writes_on_miss(monkeypatch, tmp_path):
@@ -202,3 +200,171 @@ def test_resolver_persist_cache_noop_on_hit(monkeypatch, tmp_path):
     assert r.pre_resolve() is not None  # hit → pre_resolved True
     r.persist_cache()
     assert written == {}  # no write on the hit path
+
+
+# --- daily-note template seeding -------------------------------------------
+
+
+def _vault_with_template(tmp_path, body="---\ntitle: {{date}}\ndate: {{date}}\n---\n"):
+    vault = tmp_path / "vault"
+    (vault / "04_DailyNotes").mkdir(parents=True)
+    tmpl = vault / "99_Templates" / "daily_note_template.md"
+    tmpl.parent.mkdir(parents=True)
+    tmpl.write_text(body, encoding="utf-8")
+    return vault, tmpl
+
+
+def test_daily_note_seeds_from_template_when_file_absent(tmp_path):
+    vault, tmpl = _vault_with_template(tmp_path)
+    daily_path = vault / "04_DailyNotes" / "2026-05-29.md"
+    note = daily_note.DailyNote(vault, daily_path, template=tmpl, today_str="2026-05-29")
+    assert _apply(note) is True
+    text = daily_path.read_text()
+    assert text.startswith("---\ntitle: 2026-05-29\ndate: 2026-05-29\n---\n")
+    assert "<!-- kg-recap-sid:abcd1234 -->" in text
+
+
+def test_daily_note_does_not_reseed_an_existing_file(tmp_path):
+    vault, tmpl = _vault_with_template(tmp_path)
+    daily_path = vault / "04_DailyNotes" / "2026-05-29.md"
+    daily_path.write_text("## Session 08:00〜08:10\n", encoding="utf-8")
+    note = daily_note.DailyNote(vault, daily_path, template=tmpl, today_str="2026-05-29")
+    assert _apply(note) is True
+    text = daily_path.read_text()
+    assert "title: 2026-05-29" not in text
+    assert text.startswith("## Session 08:00〜08:10\n")
+
+
+def test_daily_note_falls_back_to_empty_seed_when_template_missing(tmp_path):
+    vault, tmpl = _vault_with_template(tmp_path)
+    tmpl.unlink()
+    daily_path = vault / "04_DailyNotes" / "2026-05-29.md"
+    note = daily_note.DailyNote(vault, daily_path, template=tmpl, today_str="2026-05-29")
+    assert _apply(note) is True
+    text = daily_path.read_text()
+    assert "title:" not in text
+    assert "<!-- kg-recap-sid:abcd1234 -->" in text
+
+
+# --- template discovery -----------------------------------------------------
+
+
+def test_parse_discovery_reads_template_key():
+    d = daily_note_resolver.parse_discovery(
+        "<!-- kg-discovery -->\n"
+        "folder: 04_DailyNotes\n"
+        "filename: 2026-05-29.md\n"
+        "template: 99_Templates/daily_note_template.md\n"
+        "<!-- /kg-discovery -->\n"
+    )
+    assert d["template"] == "99_Templates/daily_note_template.md"
+
+
+def test_resolve_from_discovery_returns_template_path(monkeypatch, tmp_path):
+    ctx, vault = _ctx_with_vault(tmp_path)
+    tmpl = vault / "99_Templates" / "daily_note_template.md"
+    tmpl.parent.mkdir(parents=True)
+    tmpl.write_text("---\ndate: {{date}}\n---\n", encoding="utf-8")
+    monkeypatch.delenv("KG_DAILY_FOLDER", raising=False)
+    monkeypatch.delenv("KG_DAILY_FILENAME", raising=False)
+    monkeypatch.delenv("KG_DAILY_TEMPLATE", raising=False)
+    r = daily_note_resolver.DailyNoteResolver(ctx)
+    target = r.resolve_from_discovery(
+        "<!-- kg-discovery -->\n"
+        "folder: 04_DailyNotes\n"
+        "filename: 2026-05-29.md\n"
+        "template: 99_Templates/daily_note_template.md\n"
+        "<!-- /kg-discovery -->\n"
+    )
+    assert target is not None
+    assert target.template == tmpl
+
+
+def test_template_that_is_not_a_file_resolves_to_none(monkeypatch, tmp_path):
+    ctx, vault = _ctx_with_vault(tmp_path)
+    monkeypatch.delenv("KG_DAILY_FOLDER", raising=False)
+    monkeypatch.delenv("KG_DAILY_FILENAME", raising=False)
+    monkeypatch.delenv("KG_DAILY_TEMPLATE", raising=False)
+    r = daily_note_resolver.DailyNoteResolver(ctx)
+    target = r.resolve_from_discovery(
+        "<!-- kg-discovery -->\n"
+        "folder: 04_DailyNotes\n"
+        "filename: 2026-05-29.md\n"
+        "template: 99_Templates/nope.md\n"
+        "<!-- /kg-discovery -->\n"
+    )
+    assert target is not None
+    assert target.template is None
+
+
+def test_env_template_overrides_discovery(monkeypatch, tmp_path):
+    ctx, vault = _ctx_with_vault(tmp_path)
+    override = vault / "99_Templates" / "override.md"
+    override.parent.mkdir(parents=True)
+    override.write_text("x\n", encoding="utf-8")
+    monkeypatch.delenv("KG_DAILY_FOLDER", raising=False)
+    monkeypatch.delenv("KG_DAILY_FILENAME", raising=False)
+    monkeypatch.setenv("KG_DAILY_TEMPLATE", "99_Templates/override.md")
+    r = daily_note_resolver.DailyNoteResolver(ctx)
+    target = r.resolve_from_discovery(
+        "<!-- kg-discovery -->\n"
+        "folder: 04_DailyNotes\n"
+        "filename: 2026-05-29.md\n"
+        "template: 99_Templates/daily_note_template.md\n"
+        "<!-- /kg-discovery -->\n"
+    )
+    assert target is not None
+    assert target.template == override
+
+
+def test_pre_resolve_takes_template_from_cache(monkeypatch, tmp_path):
+    ctx, vault = _ctx_with_vault(tmp_path)
+    tmpl = vault / "99_Templates" / "daily_note_template.md"
+    tmpl.parent.mkdir(parents=True)
+    tmpl.write_text("---\ndate: {{date}}\n---\n", encoding="utf-8")
+    monkeypatch.delenv("KG_DAILY_FOLDER", raising=False)
+    monkeypatch.delenv("KG_DAILY_FILENAME", raising=False)
+    monkeypatch.delenv("KG_DAILY_TEMPLATE", raising=False)
+    monkeypatch.setattr(daily_note_resolver, "compute_readme_hash", lambda v: "deadbeef")
+    monkeypatch.setattr(
+        daily_note_resolver,
+        "read_discovery_cache",
+        lambda h: {
+            "folder": "04_DailyNotes",
+            "filename_pattern": "{date}.md",
+            "insert_before": "",
+            "template": "99_Templates/daily_note_template.md",
+        },
+    )
+    r = daily_note_resolver.DailyNoteResolver(ctx)
+    target = r.pre_resolve()
+    assert target is not None
+    assert target.path == vault / "04_DailyNotes" / "2026-05-29.md"
+    assert target.template == tmpl
+
+
+def test_discovery_cache_rejects_previous_schema_version(tmp_path, monkeypatch):
+    cache = tmp_path / "cache.json"
+    cache.write_text(
+        '{"schema": 1, "readme_hash": "deadbeef", "folder": "04_DailyNotes",'
+        ' "filename_pattern": "{date}.md"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(daily_note_resolver, "discovery_cache_path", lambda h: cache)
+    assert daily_note_resolver.read_discovery_cache("deadbeef") is None
+
+
+def test_discovery_cache_roundtrips_template(tmp_path, monkeypatch):
+    cache = tmp_path / "cache.json"
+    monkeypatch.setattr(daily_note_resolver, "discovery_cache_path", lambda h: cache)
+    daily_note_resolver.write_discovery_cache(
+        "deadbeef",
+        {
+            "folder": "04_DailyNotes",
+            "filename_pattern": "{date}.md",
+            "template": "99_Templates/daily_note_template.md",
+        },
+    )
+    got = daily_note_resolver.read_discovery_cache("deadbeef")
+    assert got is not None
+    assert got["template"] == "99_Templates/daily_note_template.md"

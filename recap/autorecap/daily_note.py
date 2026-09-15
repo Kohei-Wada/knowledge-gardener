@@ -8,6 +8,8 @@ import subprocess
 from ..shared.hook_io import log
 from .block import upsert_session_block
 
+_DATE_PLACEHOLDER = "{{date}}"
+
 
 def build_commit_subject(today: str, marker_key: str) -> str:
     """Compose the auto-recap commit subject line: `water: {today} daily auto-recap ({marker_key})`."""
@@ -78,9 +80,34 @@ def find_repo_root(start: pathlib.Path) -> pathlib.Path | None:
 
 
 class DailyNote:
-    def __init__(self, vault: pathlib.Path, daily_path: pathlib.Path) -> None:
+    def __init__(
+        self,
+        vault: pathlib.Path,
+        daily_path: pathlib.Path,
+        *,
+        template: pathlib.Path | None = None,
+        today_str: str = "",
+    ) -> None:
         self._daily_path = daily_path
         self._repo_root = find_repo_root(vault)
+        self._template = template
+        self._today_str = today_str
+
+    def _seed(self) -> str:
+        """Initial body for a daily note that does not exist yet.
+
+        The vault README names the template; we only substitute the {{date}}
+        placeholder. Any failure degrades to an empty seed so a missing or
+        unreadable template never costs a recap.
+        """
+        if self._template is None:
+            return ""
+        try:
+            body = self._template.read_text(encoding="utf-8")
+        except OSError as e:
+            log(f"daily template unreadable, seeding empty: {e!r}")
+            return ""
+        return body.replace(_DATE_PLACEHOLDER, self._today_str)
 
     @property
     def has_repo(self) -> bool:
@@ -88,7 +115,11 @@ class DailyNote:
 
     def apply_block(self, sid8: str, *, start_hhmm: str, end_hhmm: str,
                     timeline_bullets: list[str], insert_before: str) -> bool:
-        existing = self._daily_path.read_text(encoding="utf-8") if self._daily_path.exists() else ""
+        existing = (
+            self._daily_path.read_text(encoding="utf-8")
+            if self._daily_path.exists()
+            else self._seed()
+        )
         new = upsert_session_block(
             existing, sid8, start_hhmm=start_hhmm, end_hhmm=end_hhmm,
             timeline_bullets=timeline_bullets, insert_before=insert_before,
