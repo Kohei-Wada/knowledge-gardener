@@ -17,13 +17,55 @@ def test_create_block_writes_timeline_only():
     assert "### KPT" not in out
 
 
-def test_header_carries_no_topic():
+def test_header_carries_host_and_no_topic(monkeypatch):
+    monkeypatch.setenv("KG_RECAP_HOST", "gungnir")
     out = upsert_session_block(
         "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
         timeline_bullets=["- 09:00  Edit a.py"],
     )
-    # exactly the range, nothing appended after it
-    assert "\n## Session 09:00〜09:05\n" in out
+    # the range and the writing host, nothing else
+    assert "\n## Session 09:00〜09:05  @gungnir\n" in out
+
+
+def test_host_falls_back_to_short_hostname(monkeypatch):
+    monkeypatch.delenv("KG_RECAP_HOST", raising=False)
+    monkeypatch.setattr("recap.autorecap.block.socket.gethostname", lambda: "mac.local")
+    out = upsert_session_block(
+        "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
+        timeline_bullets=["- 09:00  Edit a.py"],
+    )
+    assert "## Session 09:00〜09:05  @mac\n" in out
+
+
+def test_marker_stays_host_free(monkeypatch):
+    """The sid marker is the upsert key — qualifying it by host would orphan
+    every block already in the vault."""
+    monkeypatch.setenv("KG_RECAP_HOST", "gungnir")
+    out = upsert_session_block(
+        "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
+        timeline_bullets=["- 09:00  Edit a.py"],
+    )
+    assert "<!-- kg-recap-sid:abc12345 -->" in out
+    assert "<!-- /kg-recap-sid:abc12345 -->" in out
+    assert "gungnir" not in out.split("### Timeline")[0].split("## Session")[0]
+
+
+def test_hostless_block_gains_host_on_upsert(monkeypatch):
+    """Blocks written before this change carry no host; the next Stop that
+    touches one rewrites the header in place rather than adding a second block."""
+    monkeypatch.setenv("KG_RECAP_HOST", "mac")
+    existing = (
+        "<!-- kg-recap-sid:abc12345 -->\n"
+        "## Session 09:00〜09:05\n\n"
+        "### Timeline\n- 09:00  Edit a.py\n"
+        "<!-- /kg-recap-sid:abc12345 -->\n"
+    )
+    out = upsert_session_block(
+        existing, "abc12345", start_hhmm="09:00", end_hhmm="09:30",
+        timeline_bullets=["- 09:30  Edit b.py"],
+    )
+    assert "## Session 09:00〜09:30  @mac" in out
+    assert out.count("<!-- kg-recap-sid:abc12345 -->") == 1
 
 
 def test_topic_keyword_is_rejected():
