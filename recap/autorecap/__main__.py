@@ -101,12 +101,12 @@ class AutoRecap:
         # Path resolution. Timeline-only (non-substantive) needs a pre-resolved
         # path (env/warm cache) — we never spend an LLM discovery call for it.
         if pre is not None:
-            daily_path, insert_before = pre
+            target = pre
         elif not substantive:
             log("no pre-resolved daily path and non-substantive window -> skip (cache warms on a substantive Stop)")
             return
         else:
-            daily_path, insert_before = None, ""  # resolved from discovery after the LLM call
+            target = None  # resolved from discovery after the LLM call
 
         timeline_bullets = agg.timeline     # whole-session deterministic timeline; LLM may upgrade it below
 
@@ -125,7 +125,7 @@ class AutoRecap:
             prompt = compose_prompt(tmpl_path.read_text(encoding="utf-8"), {
                 "TODAY": ctx.today_str,
                 "VAULT_README": readme,
-                "EXISTING_DAILY": (daily_path.read_text(encoding="utf-8") if daily_path and daily_path.is_file() else "(file does not exist yet)"),
+                "EXISTING_DAILY": (target.path.read_text(encoding="utf-8") if target and target.path.is_file() else "(file does not exist yet)"),
                 "TIMELINE": timeline_text,
                 "TRANSCRIPT_SLICE": tslice or "(transcript unavailable)",
             })
@@ -136,7 +136,7 @@ class AutoRecap:
                     resolved = resolver.resolve_from_discovery(out)
                     if resolved is None:
                         return
-                    daily_path, insert_before = resolved
+                    target = resolved
                 ai_bullets = extract_timeline_bullets(out)
                 if ai_bullets:
                     timeline_bullets = ai_bullets
@@ -145,10 +145,12 @@ class AutoRecap:
                 return
             # else: claude failed but path is known -> fall through, write deterministic block
 
-        note = DailyNote(ctx.vault, daily_path)
+        note = DailyNote(
+            ctx.vault, target.path, template=target.template, today_str=ctx.today_str
+        )
         if not note.apply_block(
             ctx.sid8, start_hhmm=agg.start_hhmm, end_hhmm=agg.end_hhmm,
-            timeline_bullets=timeline_bullets, insert_before=insert_before,
+            timeline_bullets=timeline_bullets, insert_before=target.insert_before,
         ):
             write_cursor(ctx.sid8, agg.end_hhmm)
             return

@@ -19,6 +19,10 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from recap.autorecap import daily_note_resolver  # noqa: E402
 
 # Neutral layout the test vault uses (created by make_vault). Names are
 # intentionally generic — knowledge-gardener is format-agnostic, so the test
@@ -718,7 +722,7 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
     cache_path = _cache_path_for(state, readme_hash)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps({
-        "schema": 1,
+        "schema": daily_note_resolver._CACHE_SCHEMA_VERSION,
         "readme_hash": readme_hash,
         "folder": DAILY_FOLDER_REL,
         "filename_pattern": "{date}.md",
@@ -770,7 +774,7 @@ def test_readme_change_invalidates_cache(tmp_path):
     stale_cache = _cache_path_for(state, stale_hash)
     stale_cache.parent.mkdir(parents=True, exist_ok=True)
     stale_cache.write_text(json.dumps({
-        "schema": 1,
+        "schema": daily_note_resolver._CACHE_SCHEMA_VERSION,
         "readme_hash": stale_hash,
         "folder": "stale-folder",  # would resolve to a non-existent path
         "filename_pattern": "{date}.md",
@@ -852,3 +856,48 @@ def test_legacy_bare_sid_block_left_untouched(tmp_path):
     assert "legacy suffixed body" in text
     # the NEW bare-sid8 block is created beside the legacy suffixed one
     assert f"<!-- kg-recap-sid:{sid8} -->" in text
+
+
+def test_new_daily_note_is_seeded_from_the_template(tmp_path):
+    """A daily note the hook creates starts from the vault's template, not an empty file."""
+    vault, daily, _ = make_vault(tmp_path)
+    tmpl = vault / "templates" / "daily.md"
+    tmpl.parent.mkdir(parents=True)
+    tmpl.write_text("---\ntitle: {{date}}\ndate: {{date}}\n---\n")
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    today = _dt.date.today().isoformat()
+
+    fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
+    env = happy_env(vault, fake)
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    env["KG_DAILY_TEMPLATE"] = "templates/daily.md"
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert res.returncode == 0
+
+    text = (daily / f"{today}.md").read_text()
+    assert text.startswith(f"---\ntitle: {today}\ndate: {today}\n---\n")
+    assert "### Timeline" in text
+
+
+def test_existing_daily_note_is_not_reseeded(tmp_path):
+    """The template only seeds a brand-new file; an existing note keeps its own head."""
+    vault, daily, _ = make_vault(tmp_path)
+    tmpl = vault / "templates" / "daily.md"
+    tmpl.parent.mkdir(parents=True)
+    tmpl.write_text("---\ntitle: {{date}}\n---\n")
+    today = _dt.date.today().isoformat()
+    (daily / f"{today}.md").write_text("## 今日作成したノート\n\n- x\n")
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+
+    fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
+    env = happy_env(vault, fake)
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    env["KG_DAILY_TEMPLATE"] = "templates/daily.md"
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert res.returncode == 0
+
+    text = (daily / f"{today}.md").read_text()
+    assert text.startswith("## 今日作成したノート\n")
+    assert "title:" not in text

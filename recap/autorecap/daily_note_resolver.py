@@ -7,11 +7,20 @@ import os
 import pathlib
 import re
 import sys
+import typing
 
 from ..shared.fs import _resolve_under_vault
 from ..shared.paths import discovery_cache_path
 from ..shared.hook_io import log
 from .context import RecapContext
+
+
+class DailyTarget(typing.NamedTuple):
+    """Everything the writer needs about today's daily note."""
+
+    path: pathlib.Path
+    insert_before: str
+    template: pathlib.Path | None
 
 # --- Discovery cache --------------------------------------------------------
 #
@@ -23,7 +32,7 @@ from .context import RecapContext
 # compose-only prompt can be used instead. README edits change the hash and
 # naturally invalidate the cache; no TTL needed.
 
-_CACHE_SCHEMA_VERSION = 1
+_CACHE_SCHEMA_VERSION = 2
 _FILENAME_DATE_PLACEHOLDER = "{date}"
 
 
@@ -79,6 +88,7 @@ def read_discovery_cache(readme_hash: str) -> dict[str, str] | None:
         "folder": folder,
         "filename_pattern": pattern,
         "insert_before": (data.get("insert_before") or "").strip(),
+        "template": (data.get("template") or "").strip(),
     }
 
 
@@ -94,6 +104,7 @@ def write_discovery_cache(readme_hash: str, discovery: dict[str, str]) -> None:
         "folder": folder,
         "filename_pattern": pattern,
         "insert_before": (discovery.get("insert_before") or "").strip(),
+        "template": (discovery.get("template") or "").strip(),
         "discovered_at": _dt.datetime.now().isoformat(timespec="seconds"),
     }
     path = discovery_cache_path(readme_hash)
@@ -119,7 +130,7 @@ _DISCOVERY_BLOCK_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _DISCOVERY_LINE_RE = re.compile(
-    r"^\s*(folder|filename|filename_pattern|insert_before)\s*:\s*(.*?)\s*$",
+    r"^\s*(folder|filename|filename_pattern|insert_before|template)\s*:\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -129,7 +140,8 @@ def parse_discovery(claude_output: str) -> dict[str, str]:
 
     Returns {} on missing/malformed block. Keys present in the returned dict
     are exactly those Claude emitted with a non-empty value, lowercase.
-    Supported keys: 'folder', 'filename', 'filename_pattern', 'insert_before'.
+    Supported keys: 'folder', 'filename', 'filename_pattern', 'insert_before',
+    'template'.
     """
     m = _DISCOVERY_BLOCK_RE.search(claude_output)
     if not m:
@@ -175,8 +187,25 @@ def _validate_daily_path(
     return folder / filename
 
 
-def resolve_daily_path(vault: pathlib.Path, discovery: dict[str, str]) -> pathlib.Path | None:
-    """Resolve today's daily-note path from env override or Claude discovery.
+def resolve_template(vault: pathlib.Path, raw: str | None) -> pathlib.Path | None:
+    """Resolve the seed template for a brand-new daily note.
+
+    KG_DAILY_TEMPLATE overrides the discovered value. Anything that is not a
+    readable file resolves to None, which makes seeding a no-op rather than an
+    error — the recap block is always worth more than the frontmatter.
+    """
+    candidate = (os.environ.get("KG_DAILY_TEMPLATE") or raw or "").strip()
+    path = _resolve_under_vault(vault, candidate)
+    if path is None:
+        return None
+    if not path.is_file():
+        log(f"daily template not a file, seeding disabled: {path}")
+        return None
+    return path
+
+
+def resolve_daily_path(vault: pathlib.Path, discovery: dict[str, str]) -> DailyTarget | None:
+    """Resolve today's daily note from env override or Claude discovery.
 
     Env precedence: KG_DAILY_FOLDER + KG_DAILY_FILENAME (if set) override
     Claude's discovery. When env is unset, discovery values are used. When
@@ -184,19 +213,26 @@ def resolve_daily_path(vault: pathlib.Path, discovery: dict[str, str]) -> pathli
     """
     folder_raw = os.environ.get("KG_DAILY_FOLDER") or discovery.get("folder", "")
     filename = (os.environ.get("KG_DAILY_FILENAME") or discovery.get("filename") or "").strip()
-    return _validate_daily_path(vault, folder_raw, filename, context="discovery")
+    path = _validate_daily_path(vault, folder_raw, filename, context="discovery")
+    if path is None:
+        return None
+    return DailyTarget(
+        path=path,
+        insert_before=discovery.get("insert_before", ""),
+        template=resolve_template(vault, discovery.get("template")),
+    )
 
 
 def pre_resolve_daily_path(
     vault: pathlib.Path,
     cached: dict[str, str] | None,
     today_str: str,
-) -> tuple[pathlib.Path, str] | None:
-    """Try to resolve today's daily-note path from env + discovery cache only.
+) -> DailyTarget | None:
+    """Try to resolve today's daily note from env + discovery cache only.
 
-    Returns (daily_path, insert_before) when both folder and filename can be
-    determined without an LLM discovery call; returns None to signal the
-    caller should fall back to the full discovery prompt.
+    Returns a DailyTarget when both folder and filename can be determined
+    without an LLM discovery call; returns None to signal the caller should
+    fall back to the full discovery prompt.
     """
     env_folder = os.environ.get("KG_DAILY_FOLDER")
     env_filename = os.environ.get("KG_DAILY_FILENAME")
@@ -216,7 +252,11 @@ def pre_resolve_daily_path(
     daily_path = _validate_daily_path(vault, folder_raw, filename, context="pre-resolve")
     if daily_path is None:
         return None
-    return (daily_path, insert_before)
+    return DailyTarget(
+        path=daily_path,
+        insert_before=insert_before,
+        template=resolve_template(vault, cached.get("template") if cached else ""),
+    )
 
 
 class DailyNoteResolver:
@@ -229,18 +269,18 @@ class DailyNoteResolver:
         self._discovery: dict[str, str] = {}
         self.pre_resolved = False
 
-    def pre_resolve(self) -> tuple[pathlib.Path, str] | None:
+    def pre_resolve(self) -> DailyTarget | None:
         pre = pre_resolve_daily_path(self._ctx.vault, self._cached, self._ctx.today_str)
         self.pre_resolved = pre is not None
         return pre
 
-    def resolve_from_discovery(self, claude_output: str) -> tuple[pathlib.Path, str] | None:
+    def resolve_from_discovery(self, claude_output: str) -> DailyTarget | None:
         self._discovery = parse_discovery(claude_output)
-        daily_path = resolve_daily_path(self._ctx.vault, self._discovery)
-        if daily_path is None:
+        target = resolve_daily_path(self._ctx.vault, self._discovery)
+        if target is None:
             log("could not resolve daily-note path (no env override and no discovery from README)")
             return None
-        return (daily_path, self._discovery.get("insert_before", ""))
+        return target
 
     def persist_cache(self) -> None:
         if (
