@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import socket
 
 # Bare sid8 marker only — the trailing (?![-\w]) guard prevents matching a
 # legacy `kg-recap-sid:{sid8}-{HHMM}` block.
@@ -30,8 +32,22 @@ def extract_timeline_bullets(text: str) -> list[str] | None:
     return [ln for ln in lines if ln.strip()]
 
 
+def recap_host() -> str:
+    """Machine label for the block header.
+
+    A vault written from more than one machine otherwise gives no way to tell
+    where a session ran. It stays out of the `kg-recap-sid:` marker on purpose:
+    that marker is the upsert key, and a host-qualified key would stop matching
+    the blocks already in the vault. KG_RECAP_HOST overrides for a machine whose
+    system hostname says nothing useful."""
+    host = os.environ.get("KG_RECAP_HOST") or socket.gethostname()
+    return host.split(".")[0].strip()
+
+
 def _render_header(start: str, end: str) -> str:
-    return f"## Session {start}〜{end}"
+    host = recap_host()
+    suffix = f"  @{host}" if host else ""
+    return f"## Session {start}〜{end}{suffix}"
 
 
 def _new_block(sid8, start, end, timeline_bullets) -> str:
