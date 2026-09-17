@@ -83,13 +83,24 @@ Follow [Common: Propose, Don't Commit](../using-knowledge-gardener/SKILL.md#comm
 
 Trigger phrases that count as implicit approval: "save this to my vault" / "vault に書いといて" / "メモっといて".
 
-### Step 5: Write and Commit (if vault is a git repo)
+### Step 5: Write the Note
 
-After approval:
+After approval, write the file to the proposed path.
 
-1. Write the file to the proposed path.
-2. If `$KG_VAULT/.git` exists, run any pre-commit hooks the vault has (don't bypass them — if they fail, fix and retry).
-3. **Do not auto-commit or push.** The user owns the vault's git workflow. Just write the file; let them stage/commit on their own cadence — unless they ask you to commit.
+### Step 6: Lint, Commit, Push
+
+Follow [Common: Lint, Commit, Push](../using-knowledge-gardener/SKILL.md#common-lint-commit-push). Commit subject verb for this skill: `plant:`. See examples below.
+
+### Commit Subject Examples
+
+| Operation | Commit subject |
+|-----------|----------------|
+| New reference note | `plant: sqlite3-csv-import 手順を整理` |
+| New permanent note | `plant: 冗長性ゼロのデータは圧縮できない` |
+| New MOC | `plant: ssh-MOC` |
+| New note split from one insight | `plant: rsync --delete の事故パターン` |
+
+Keep the subject under ~60 chars; put detail in the commit body if needed.
 
 ## Edge Cases
 
