@@ -155,6 +155,8 @@ class AutoRecap:
             write_cursor(ctx.sid8, agg.end_hhmm)
             return
 
+        note.apply_references(target.references_section, agg.referenced_notes, vault=ctx.vault)
+
         if not note.has_repo:
             log("vault not in a git repo - skipping commit; cursor updated")
             write_cursor(ctx.sid8, agg.end_hhmm)

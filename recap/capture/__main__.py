@@ -27,6 +27,11 @@ ALWAYS_SKIP = frozenset({
     "ShareOnboardingGuide",
 })
 
+# `Read` is skipped as navigation noise, with one exception: reading a note
+# inside the vault is consulting knowledge, not navigating. Those are re-emitted
+# under this synthetic tool name so the aggregator can tell them apart.
+READ_NOTE_TOOL = "ReadNote"
+
 BASH_TRIVIAL = frozenset({
     "ls", "pwd", "cat", "head", "tail", "find", "echo",
     "which", "type", "grep", "rg", "wc", "sort", "uniq",
@@ -62,6 +67,23 @@ def _short_path(path: str) -> str:
     if p.parent.name:
         return f"{p.parent.name}/{p.name}"
     return p.name
+
+
+def _vault_relative(file_path: str) -> str | None:
+    """`file_path` as a vault-root-relative path, or None if it is outside the vault.
+
+    Resolves symlinks on both sides so a vault reached through a link still matches.
+    """
+    vault = os.environ.get("KG_VAULT")
+    if not vault or not file_path:
+        return None
+    try:
+        root = pathlib.Path(vault).expanduser().resolve()
+        target = pathlib.Path(file_path).expanduser().resolve()
+        rel = target.relative_to(root)
+    except (ValueError, OSError, RuntimeError):
+        return None
+    return str(rel) if rel.parts else None
 
 
 def _compose_target(tool_name: str, tool_input: dict) -> str:
@@ -184,13 +206,18 @@ def main() -> None:
         return
 
     tool_name = payload.get("tool_name") or "?"
-    if tool_name in ALWAYS_SKIP:
-        _emit_continue()
-        return
 
     tool_input = payload.get("tool_input") or {}
     if not isinstance(tool_input, dict):
         tool_input = {}
+
+    note_rel = None
+    if tool_name == "Read":
+        note_rel = _vault_relative(tool_input.get("file_path") or "")
+
+    if tool_name in ALWAYS_SKIP and note_rel is None:
+        _emit_continue()
+        return
 
     if tool_name == "Bash":
         head = _bash_head(tool_input.get("command") or "")
@@ -198,10 +225,13 @@ def main() -> None:
             _emit_continue()
             return
 
-    try:
-        target = _compose_target(tool_name, tool_input)
-    except Exception:
-        target = "?"
+    if note_rel is not None:
+        tool_name, target = READ_NOTE_TOOL, note_rel
+    else:
+        try:
+            target = _compose_target(tool_name, tool_input)
+        except Exception:
+            target = "?"
     target = _privacy_strip(target)
 
     status = _status(payload.get("tool_response"))

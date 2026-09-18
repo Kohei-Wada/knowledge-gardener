@@ -47,6 +47,7 @@ class Aggregation:
     entry_count: int
     duration_min: int
     timeline: list[str]
+    referenced_notes: list[str]
 
 
 class SessionAggregator:
@@ -68,4 +69,5 @@ class SessionAggregator:
             entry_count=int(s.get("entry_count") or 0),
             duration_min=int(s.get("duration_min") or 0),
             timeline=list(s.get("timeline") or []),
+            referenced_notes=list(s.get("referenced_notes") or []),
         )
