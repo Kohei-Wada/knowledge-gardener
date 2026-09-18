@@ -21,6 +21,7 @@ class DailyTarget(typing.NamedTuple):
     path: pathlib.Path
     insert_before: str
     template: pathlib.Path | None
+    references_section: str = ""
 
 # --- Discovery cache --------------------------------------------------------
 #
@@ -130,7 +131,7 @@ _DISCOVERY_BLOCK_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _DISCOVERY_LINE_RE = re.compile(
-    r"^\s*(folder|filename|filename_pattern|insert_before|template)\s*:\s*(.*?)\s*$",
+    r"^\s*(folder|filename|filename_pattern|insert_before|template|references_section)\s*:\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -141,7 +142,7 @@ def parse_discovery(claude_output: str) -> dict[str, str]:
     Returns {} on missing/malformed block. Keys present in the returned dict
     are exactly those Claude emitted with a non-empty value, lowercase.
     Supported keys: 'folder', 'filename', 'filename_pattern', 'insert_before',
-    'template'.
+    'template', 'references_section'.
     """
     m = _DISCOVERY_BLOCK_RE.search(claude_output)
     if not m:
@@ -220,6 +221,7 @@ def resolve_daily_path(vault: pathlib.Path, discovery: dict[str, str]) -> DailyT
         path=path,
         insert_before=discovery.get("insert_before", ""),
         template=resolve_template(vault, discovery.get("template")),
+        references_section=discovery.get("references_section", ""),
     )
 
 
@@ -256,6 +258,7 @@ def pre_resolve_daily_path(
         path=daily_path,
         insert_before=insert_before,
         template=resolve_template(vault, cached.get("template") if cached else ""),
+        references_section=(cached.get("references_section", "") if cached else ""),
     )
 
 

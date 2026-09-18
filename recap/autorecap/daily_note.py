@@ -7,6 +7,7 @@ import subprocess
 
 from ..shared.hook_io import log
 from .block import upsert_session_block
+from .references import upsert_references
 
 _DATE_PLACEHOLDER = "{{date}}"
 
@@ -135,6 +136,33 @@ class DailyNote:
             log(f"daily write failed: {e!r}")
             try:
                 tmp.unlink(missing_ok=True)  # don't leave an orphaned .tmp in the vault
+            except OSError:
+                pass
+            return False
+        return True
+
+    def apply_references(self, heading: str, note_rels: list[str], *,
+                         vault: pathlib.Path) -> bool:
+        """Record notes consulted this session. No-op unless the vault declares a heading."""
+        if not heading or not note_rels or not self._daily_path.exists():
+            return False
+        try:
+            existing = self._daily_path.read_text(encoding="utf-8")
+            daily_rel_dir = str(self._daily_path.parent.relative_to(vault))
+        except (OSError, ValueError) as e:
+            log(f"references skipped: {e!r}")
+            return False
+        new = upsert_references(existing, heading, note_rels, daily_rel_dir)
+        if new == existing:
+            return False
+        tmp = self._daily_path.with_suffix(self._daily_path.suffix + ".tmp")
+        try:
+            tmp.write_text(new, encoding="utf-8")
+            os.replace(tmp, self._daily_path)
+        except OSError as e:
+            log(f"references write failed: {e!r}")
+            try:
+                tmp.unlink(missing_ok=True)
             except OSError:
                 pass
             return False

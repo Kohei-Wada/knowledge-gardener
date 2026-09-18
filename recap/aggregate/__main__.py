@@ -28,7 +28,10 @@ LINE_RE = re.compile(
 
 FILE_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 WEB_TOOLS = frozenset({"WebFetch", "WebSearch"})
-NOISE_TOOLS = frozenset({"StructuredOutput"})
+READ_NOTE_TOOL = "ReadNote"
+# ReadNote surfaces as `referenced_notes`, never as Timeline activity — consulting
+# a note is context for the day, not a step in it.
+NOISE_TOOLS = frozenset({"StructuredOutput", READ_NOTE_TOOL})
 MAX_BASH_HIGHLIGHTS = 10
 _COMMIT_PUSH_RE = re.compile(r"\bgit\s+(commit|push)\b")
 
@@ -155,6 +158,7 @@ def aggregate_session(path: pathlib.Path, date: _dt.date, since: str | None = No
 
     file_counts: OrderedDict[str, int] = OrderedDict()
     bash_seen: OrderedDict[str, None] = OrderedDict()
+    referenced: OrderedDict[str, None] = OrderedDict()
     agent_subagents: list[str] = []
     webio = 0
     mcp_servers: Counter[str] = Counter()
@@ -168,7 +172,10 @@ def aggregate_session(path: pathlib.Path, date: _dt.date, since: str | None = No
         tool = e["tool"]
         target = e["target"]
 
-        if tool in FILE_TOOLS:
+        if tool == READ_NOTE_TOOL:
+            if target:
+                referenced.setdefault(target, None)
+        elif tool in FILE_TOOLS:
             file_counts[target] = file_counts.get(target, 0) + 1
         elif tool == "Bash":
             if target not in bash_seen and len(bash_seen) < MAX_BASH_HIGHLIGHTS:
@@ -197,6 +204,7 @@ def aggregate_session(path: pathlib.Path, date: _dt.date, since: str | None = No
         "duration_min": _duration_minutes(hhmms[0], hhmms[-1]) if hhmms else 0,
         "file_counts": file_counts,
         "bash_highlights": list(bash_seen.keys()),
+        "referenced_notes": list(referenced.keys()),
         "agent_subagents": agent_subagents,
         "agent_count": sum(1 for e in entries if e["tool"] == "Agent"),
         "webio_count": webio,

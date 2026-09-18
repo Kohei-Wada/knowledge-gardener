@@ -14,6 +14,7 @@ filename: <filename for today's daily note>
 filename_pattern: <same filename with today's date replaced by the literal {date}>
 insert_before: <heading line the recap block must precede, or empty to append at EOF>
 template: <path to the daily-note template, relative to the vault root, or empty>
+references_section: <heading for notes consulted today, or empty>
 <!-- /kg-discovery -->
 ### Timeline
 
@@ -32,6 +33,7 @@ Derive `folder`, `filename`, and `insert_before` **only from what the vault READ
 - **filename**: today's filename per the README's filename convention. Today's date is `{{TODAY}}`. If the README says `YYYY-MM-DD.md`, emit `{{TODAY}}.md`. Use whatever the README declares.
 - **filename_pattern**: same as `filename` but with today's date (`{{TODAY}}`) replaced by the literal placeholder `{date}`. The runtime caches this so future runs can derive tomorrow's filename without re-asking the LLM. If the README's filename rule does not include a date at all, emit the static filename unchanged (no placeholder). Substituting `{date}` with `{{TODAY}}` must produce exactly the `filename` above — keep the two consistent.
 - **template**: optional. If the README names a template file that a new daily note is created from, emit its path relative to the vault root. The runtime reads it only when today's note does not exist yet, substitutes the literal `{{date}}` placeholder with today's date, and writes the recap block after it. If the README documents no daily-note template, leave the value empty — the note is then created with the recap block alone, as before.
+- **references_section**: optional. If the README documents a section listing the notes a session consulted (as opposed to the ones it created), emit the exact heading line including its `##` prefix. If the README documents no such section, leave it empty — the runtime then records nothing, and never invents a heading of its own.
 - **insert_before**: optional. If the README documents a heading that the recap block must precede (e.g. a trailing "関連リンク" / "Related" / "Carry over" section), emit the exact heading line (including the `##` prefix). If the README is silent on insertion order, leave the value empty — the script will append at end of file.
 
 **Tree-format READMEs**: when the README documents folder layout via a directory tree (ASCII or otherwise), the topmost directory in the tree often represents the vault root itself — i.e. it stands for `$KG_VAULT` rather than a subdirectory under it. Do NOT include that top node as a prefix on `folder`. Schematic example:

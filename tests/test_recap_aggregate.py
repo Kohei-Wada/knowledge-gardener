@@ -490,3 +490,17 @@ def test_json_mode_emits_durable_and_timeline(tmp_path, monkeypatch):
     assert s["durable_change"] is True
     assert s["timeline"] == ["- 10:00  Edit a.md"]
     assert s["first_hhmm"] == "10:00"
+
+
+def test_readnote_becomes_referenced_notes_and_stays_out_of_the_timeline(tmp_path):
+    log = tmp_path / "2026-09-18-abc12345.log"
+    log.write_text(
+        "10:00 tool=ReadNote target=03_PermanentNotes/foo.md\n"
+        "10:00 tool=ReadNote target=03_PermanentNotes/foo.md\n"
+        "10:01 tool=ReadNote target=02_ReferenceNotes/bar.md\n"
+        "10:02 tool=Bash target=git status\n"
+    )
+    agg = aggregate_session(log, _dt.date(2026, 9, 18))
+    assert agg["referenced_notes"] == ["03_PermanentNotes/foo.md", "02_ReferenceNotes/bar.md"]
+    assert not any("ReadNote" in line for line in agg["timeline"])
+    assert any("git status" in line for line in agg["timeline"])

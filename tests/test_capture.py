@@ -329,3 +329,46 @@ def test_bash_cd_prefix_does_not_eat_command_starting_with_cd(tmp_path):
         tmp_path=tmp_path,
     )
     assert "target=cdburn --foo" in read_today_log(log_dir)
+
+
+# --- vault reads -------------------------------------------------------------
+
+def _vault_read_payload(note: Path) -> dict:
+    return {"session_id": "testsess", "tool_name": "Read", "tool_input": {"file_path": str(note)}}
+
+
+def test_read_inside_vault_is_logged_as_readnote(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    note = vault / "03_PermanentNotes" / "foo.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("x")
+    monkeypatch.setenv("KG_VAULT", str(vault))
+
+    stdout, _, log_dir = run_capture(_vault_read_payload(note), tmp_path=tmp_path)
+    assert_continue(stdout)
+    log = read_today_log(log_dir)
+    assert "tool=ReadNote" in log
+    # full vault-relative path, not the shortened parent/name form
+    assert "target=03_PermanentNotes/foo.md" in log
+
+
+def test_read_outside_vault_is_still_skipped(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "elsewhere" / "notes.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x")
+    monkeypatch.setenv("KG_VAULT", str(vault))
+
+    stdout, _, log_dir = run_capture(_vault_read_payload(outside), tmp_path=tmp_path)
+    assert_continue(stdout)
+    assert read_today_log(log_dir) == ""
+
+
+def test_read_without_kg_vault_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.delenv("KG_VAULT", raising=False)
+    note = tmp_path / "foo.md"
+    note.write_text("x")
+    stdout, _, log_dir = run_capture(_vault_read_payload(note), tmp_path=tmp_path)
+    assert_continue(stdout)
+    assert read_today_log(log_dir) == ""
