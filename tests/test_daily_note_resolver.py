@@ -1,6 +1,7 @@
 """Unit tests for the class-based internals of the auto_recap hook (split modules)."""
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -344,12 +345,20 @@ def test_pre_resolve_takes_template_from_cache(monkeypatch, tmp_path):
 
 
 def test_discovery_cache_rejects_previous_schema_version(tmp_path, monkeypatch):
+    """An entry written before the current key set must not be served.
+
+    Tracks the constant rather than a literal: adding a discovery key leaves the
+    README hash untouched, so bumping the schema is the only thing that retires
+    entries predating the key.
+    """
     cache = tmp_path / "cache.json"
-    cache.write_text(
-        '{"schema": 1, "readme_hash": "deadbeef", "folder": "04_DailyNotes",'
-        ' "filename_pattern": "{date}.md"}',
-        encoding="utf-8",
-    )
+    stale = json.dumps({
+        "schema": daily_note_resolver._CACHE_SCHEMA_VERSION - 1,
+        "readme_hash": "deadbeef",
+        "folder": "04_DailyNotes",
+        "filename_pattern": "{date}.md",
+    })
+    cache.write_text(stale, encoding="utf-8")
     monkeypatch.setattr(daily_note_resolver, "discovery_cache_path", lambda h: cache)
     assert daily_note_resolver.read_discovery_cache("deadbeef") is None
 
