@@ -32,8 +32,15 @@ class DailyTarget(typing.NamedTuple):
 # README content(s) so unchanged READMEs skip the discovery LLM work and the
 # compose-only prompt can be used instead. README edits change the hash and
 # naturally invalidate the cache; no TTL needed.
+#
+# Adding a discovery key does NOT change the README hash, so a machine keeps
+# serving an entry written before the key existed and the new value stays
+# empty forever — silently, on every machine but the one you tested on. Bump
+# the schema whenever the set of keys changes; that forces exactly one fresh
+# discovery per machine.
+#   2 -> 3: references_section (v0.25.0)
 
-_CACHE_SCHEMA_VERSION = 2
+_CACHE_SCHEMA_VERSION = 3
 _FILENAME_DATE_PLACEHOLDER = "{date}"
 
 
