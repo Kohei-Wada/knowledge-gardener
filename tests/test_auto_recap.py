@@ -901,3 +901,99 @@ def test_existing_daily_note_is_not_reseeded(tmp_path):
     text = (daily / f"{today}.md").read_text()
     assert text.startswith("## 今日作成したノート\n")
     assert "title:" not in text
+
+
+# --- commit scope / push retry ----------------------------------------------
+
+def test_commit_does_not_sweep_in_other_staged_files(tmp_path):
+    """A file staged by someone else must not be swept into the recap commit.
+
+    The vault is shared: the user's own session (or another agent) can have
+    files staged in the index while the Stop hook fires. A bare `git commit`
+    would commit those too.
+    """
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    other = repo / "unrelated.md"
+    other.write_text("staged by someone else\n")
+    subprocess.run(["git", "add", "unrelated.md"], cwd=repo, check=True)
+
+    write_session_log(state, "scopetst", ["09:00 tool=Edit target=a.md"])
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
+    run_hook(
+        {"session_id": "scopetst-uuid"},
+        env_extra=happy_env(vault, fake),
+        state_home=state,
+    )
+
+    proc = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    committed = [line for line in proc.stdout.splitlines() if line.strip()]
+    today = _dt.date.today().isoformat()
+    assert len(committed) == 1
+    assert committed[0].endswith(f"{DAILY_FOLDER_REL}/{today}.md")
+    assert "unrelated.md" not in committed
+
+    # the other file is still staged and uncommitted, exactly as it was
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "unrelated.md" in staged.stdout
+
+
+def _init_remote(tmp_path: Path, repo: Path) -> tuple[Path, Path]:
+    """Give `repo` a bare origin and return (remote, a second clone of it)."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "HEAD"], cwd=repo, check=True)
+    other = tmp_path / "otherclone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    subprocess.run(["git", "config", "user.name", "other"], cwd=other, check=True)
+    subprocess.run(["git", "config", "user.email", "o@example.com"], cwd=other, check=True)
+    return remote, other
+
+
+def test_push_retries_after_rebasing_on_remote_changes(tmp_path):
+    """Another machine pushing first must not leave the recap commit stranded locally."""
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    remote, other = _init_remote(tmp_path, repo)
+
+    # another machine pushes a commit first → our push would be rejected
+    (other / "from-other-machine.md").write_text("earlier push\n")
+    subprocess.run(["git", "add", "from-other-machine.md"], cwd=other, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "from other machine"], cwd=other, check=True)
+    subprocess.run(["git", "push", "-q"], cwd=other, check=True)
+
+    write_session_log(state, "pushtest", ["09:00 tool=Edit target=a.md"])
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
+    env = happy_env(vault, fake)
+    env["KG_AUTO_RECAP_NO_PUSH"] = "0"
+    run_hook({"session_id": "pushtest-uuid"}, env_extra=env, state_home=state)
+
+    # the recap landed on the remote, on top of the other machine's commit
+    subprocess.run(["git", "fetch", "-q"], cwd=other, check=True)
+    remote_log = subprocess.run(
+        ["git", "log", "--oneline", "-3", "FETCH_HEAD"],
+        cwd=other,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    today = _dt.date.today().isoformat()
+    assert f"water: {today}" in remote_log.stdout
+    assert "from other machine" in remote_log.stdout
+
+    # and nothing is left half-rebased locally
+    assert not (repo / ".git" / "rebase-merge").exists()
+    assert not (repo / ".git" / "rebase-apply").exists()
