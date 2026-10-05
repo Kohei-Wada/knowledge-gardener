@@ -57,8 +57,10 @@ def commit_and_push(
         return
     today = _dt.date.today().isoformat()
     subject = build_commit_subject(today, marker_key)
+    # Path-limited: the vault is shared, so the index can hold files staged by
+    # the user's own session. A bare `git commit` would sweep those in.
     code, _, err = run_git(
-        ["commit", "-m", subject],
+        ["commit", "-m", subject, "--", str(rel)],
         repo_root,
     )
     if code != 0:
@@ -67,9 +69,28 @@ def commit_and_push(
     if os.environ.get("KG_AUTO_RECAP_NO_PUSH") == "1":
         log(f"push skipped (KG_AUTO_RECAP_NO_PUSH=1) for {today} {marker_key}")
         return
-    code, _, err = run_git(["push"], repo_root)
-    if code != 0:
-        log(f"git push failed: {err[:200]!r}")
+    _push_with_rebase(repo_root)
+
+
+def _push_with_rebase(repo_root: pathlib.Path, attempts: int = 3) -> None:
+    """Push, rebasing onto the remote when another machine pushed first.
+
+    The same vault is recapped from several machines, so a rejected push is
+    routine rather than exceptional. Without the retry the commit stays local
+    and the next session inherits a diverged branch.
+    """
+    err = ""
+    for _ in range(attempts):
+        code, _, err = run_git(["push"], repo_root)
+        if code == 0:
+            return
+        code, _, rebase_err = run_git(["pull", "--rebase"], repo_root)
+        if code != 0:
+            # Never leave the vault half-rebased for the next session to find.
+            run_git(["rebase", "--abort"], repo_root)
+            log(f"git pull --rebase failed, push abandoned: {rebase_err[:200]!r}")
+            return
+    log(f"git push failed after {attempts} attempts: {err[:200]!r}")
 
 
 def find_repo_root(start: pathlib.Path) -> pathlib.Path | None:
