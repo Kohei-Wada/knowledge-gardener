@@ -226,3 +226,44 @@ def test_extract_timeline_bullets_empty_section_yields_empty_list():
 def test_extract_timeline_bullets_does_not_leak_following_section():
     # malformed output: empty Timeline directly followed by another heading, no blank line
     assert extract_timeline_bullets("### Timeline\n### Other\n- x") == []
+
+
+@pytest.mark.parametrize("bullet, expected", [
+    ("- 09:00 PR #237を完了", "- 09:00 PR `#237`を完了"),
+    ("- 09:00 #308/309 をマージ", "- 09:00 `#308`/309 をマージ"),
+    ("- 09:00 #youwire_support で質問", "- 09:00 `#youwire_support` で質問"),
+    ("- 09:00 #youwire_運用強化pj2026 を確認", "- 09:00 `#youwire_運用強化pj2026` を確認"),
+])
+def test_tag_like_hashes_are_wrapped_in_code(bullet, expected):
+    # Obsidian reads `#` + non-numeric text as a tag; code spans are exempt.
+    out = upsert_session_block(
+        "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
+        timeline_bullets=[bullet],
+    )
+    assert expected in out
+
+
+@pytest.mark.parametrize("bullet", [
+    "- 09:00 nixos-config #418 をマージ",
+    "- 09:00 PR #414（導入）",
+    "- 09:00 `#237を完了` は既にコード",
+    "- 09:00 [a](b.md#anchor) と issue#12",
+])
+def test_non_tag_hashes_are_left_alone(bullet):
+    out = upsert_session_block(
+        "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
+        timeline_bullets=[bullet],
+    )
+    assert bullet in out
+
+
+def test_tag_escape_applies_on_update_too():
+    first = upsert_session_block(
+        "", "abc12345", start_hhmm="09:00", end_hhmm="09:05",
+        timeline_bullets=["- 09:00 a"],
+    )
+    out = upsert_session_block(
+        first, "abc12345", start_hhmm="09:00", end_hhmm="09:10",
+        timeline_bullets=["- 09:05 #237を完了"],
+    )
+    assert "- 09:05 `#237`を完了" in out
