@@ -32,6 +32,33 @@ def extract_timeline_bullets(text: str) -> list[str] | None:
     return [ln for ln in lines if ln.strip()]
 
 
+_TAG_RE = re.compile(r"(?:(?<=\s)|^)#([\w/-]+)")
+_CODE_SPAN_RE = re.compile(r"(`[^`]*`)")
+
+
+def _code_tag(m: re.Match) -> str:
+    token = m.group(1)
+    if token.isdigit():
+        return m.group(0)
+    lead = re.match(r"\d+", token)
+    if lead:
+        return f"`#{lead.group(0)}`{token[lead.end():]}"
+    return f"`#{token}`"
+
+
+def escape_inline_tags(line: str) -> str:
+    """Wrap `#...` that Obsidian would read as a tag in a code span.
+
+    Obsidian treats `#` + text with a non-digit (`#237を完了`, `#youwire_support`)
+    as a tag, so an issue number or channel name in a recap pollutes the tag
+    list. Code spans are never tags. A bare number (`#418`) is not a tag and is
+    left alone; for a number glued to text only the number is wrapped."""
+    parts = _CODE_SPAN_RE.split(line)
+    for i in range(0, len(parts), 2):
+        parts[i] = _TAG_RE.sub(_code_tag, parts[i])
+    return "".join(parts)
+
+
 def recap_host() -> str:
     """Machine label for the block header.
 
@@ -64,6 +91,7 @@ def _new_block(sid8, start, end, timeline_bullets) -> str:
 
 def upsert_session_block(note_text: str, sid8: str, *, start_hhmm: str, end_hhmm: str,
                          timeline_bullets: list[str], insert_before: str = "") -> str:
+    timeline_bullets = [escape_inline_tags(b) for b in timeline_bullets]
     om = _open_re(sid8).search(note_text)
     cm = _close_re(sid8).search(note_text)
     if om and cm and cm.start() > om.start():
