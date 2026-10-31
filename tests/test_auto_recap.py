@@ -22,7 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from recap.autorecap import daily_note  # noqa: E402
 from recap.autorecap import daily_note_resolver  # noqa: E402
+from recap.shared import hook_io  # noqa: E402
 
 # Neutral layout the test vault uses (created by make_vault). Names are
 # intentionally generic — knowledge-gardener is format-agnostic, so the test
@@ -997,3 +999,86 @@ def test_push_retries_after_rebasing_on_remote_changes(tmp_path):
     # and nothing is left half-rebased locally
     assert not (repo / ".git" / "rebase-merge").exists()
     assert not (repo / ".git" / "rebase-apply").exists()
+
+
+def test_push_reapplies_block_when_both_machines_created_the_daily_note(tmp_path):
+    """Two machines creating today's note independently must not strand the recap.
+
+    Both sides add the same path, so `pull --rebase` conflicts (add/add). The
+    recap is re-applied onto the remote's note instead of aborting, so both
+    machines' blocks survive and the branch does not diverge.
+    """
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    remote, other = _init_remote(tmp_path, repo)
+    today = _dt.date.today().isoformat()
+
+    other_daily = other / "vault" / DAILY_FOLDER_REL / f"{today}.md"
+    other_daily.parent.mkdir(parents=True, exist_ok=True)
+    other_daily.write_text(
+        "<!-- kg-recap-sid:othersid -->\n"
+        "## Session 08:00〜08:30  @other\n"
+        "\n"
+        "### Timeline\n"
+        "- 08:00 work on the other machine\n"
+        "<!-- /kg-recap-sid:othersid -->\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=other, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "other machine recap"], cwd=other, check=True)
+    subprocess.run(["git", "push", "-q"], cwd=other, check=True)
+
+    write_session_log(state, "bothnew0", ["09:00 tool=Edit target=a.md"])
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
+    env = happy_env(vault, fake)
+    env["KG_AUTO_RECAP_NO_PUSH"] = "0"
+    run_hook({"session_id": "bothnew0-uuid"}, env_extra=env, state_home=state)
+
+    assert not (repo / ".git" / "rebase-merge").exists()
+    assert not (repo / ".git" / "rebase-apply").exists()
+    subprocess.run(["git", "fetch", "-q"], cwd=repo, check=True)
+    ahead_behind = subprocess.run(
+        ["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ahead_behind.stdout.split() == ["0", "0"]
+
+    subprocess.run(["git", "pull", "-q"], cwd=other, check=True)
+    text = other_daily.read_text()
+    assert text.count("<!-- kg-recap-sid:othersid -->") == 1
+    assert "- 08:00 work on the other machine" in text
+    assert text.count("<!-- kg-recap-sid:bothnew0 -->") == 1
+    assert "<<<<<<<" not in text
+
+
+def test_failed_conflict_check_after_continue_aborts_instead_of_skipping(tmp_path, monkeypatch):
+    """A failing `git diff` must not be read as "no conflicts left".
+
+    Its stdout is empty on failure, the same as when nothing is unmerged, so
+    trusting it alone would `rebase --skip` and drop our commit.
+    """
+    (tmp_path / "daily").mkdir()
+    calls: list[list[str]] = []
+    unmerged = [(0, "daily/today.md\n", "")]  # then every check fails
+
+    def fake_git(args, cwd):
+        calls.append(args)
+        if args == ["push"]:
+            return 1, "", "rejected"
+        if args == ["pull", "--rebase"]:
+            return 1, "", "conflict"
+        if args == ["diff", "--name-only", "--diff-filter=U"]:
+            return unmerged.pop(0) if unmerged else (128, "", "fatal: index broken")
+        if args[:3] == ["-c", "core.editor=true", "rebase"]:
+            return 1, "", "could not commit"
+        return 0, "", ""
+
+    monkeypatch.setattr(daily_note, "run_git", fake_git)
+    monkeypatch.setattr(daily_note, "_rebase_in_progress", lambda repo_root: True)
+    daily_note._push_with_rebase(tmp_path, lambda rel, base, ours: "merged\n")
+
+    assert ["rebase", "--skip"] not in calls
+    assert ["rebase", "--abort"] in calls
+    assert "push abandoned" in hook_io.LOG_FILE.read_text()

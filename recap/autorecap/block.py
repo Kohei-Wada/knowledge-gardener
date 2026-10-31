@@ -122,3 +122,35 @@ def upsert_session_block(note_text: str, sid8: str, *, start_hhmm: str, end_hhmm
         return note_text[:m.start()] + "\n" + new + note_text[m.start():]
     sep = "" if note_text.endswith("\n") or not note_text else "\n"
     return note_text + sep + new
+
+
+_ANY_BLOCK_RE = re.compile(
+    r"<!--\s*kg-recap-sid:([0-9a-zA-Z]+)\s*-->.*?<!--\s*/kg-recap-sid:\1\s*-->\n?",
+    re.DOTALL,
+)
+
+
+def copy_session_blocks(note_text: str, source_text: str, insert_before: str = "") -> str:
+    """Carry every session block of `source_text` into `note_text`.
+
+    Used when another machine wrote the same daily note: their version is the
+    base and ours contributes its blocks. A block already present by sid is
+    replaced (ours is the newer write of it), a missing one is inserted where
+    upsert_session_block would put it, so applying twice changes nothing.
+    """
+    for m in _ANY_BLOCK_RE.finditer(source_text):
+        block = m.group(0) if m.group(0).endswith("\n") else m.group(0) + "\n"
+        om = _open_re(m.group(1)).search(note_text)
+        cm = _close_re(m.group(1)).search(note_text)
+        if om and cm and cm.start() > om.start():
+            end = cm.end() + 1 if note_text[cm.end():cm.end() + 1] == "\n" else cm.end()
+            note_text = note_text[:om.start()] + block + note_text[end:]
+            continue
+        anchor = insert_before.strip()
+        am = re.search(r"\n" + re.escape(anchor), note_text) if anchor else None
+        if am:
+            note_text = note_text[:am.start()] + "\n" + block + note_text[am.start():]
+        else:
+            sep = "" if note_text.endswith("\n") or not note_text else "\n"
+            note_text = note_text + sep + block
+    return note_text
