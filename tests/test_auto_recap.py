@@ -22,7 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from recap.autorecap import daily_note  # noqa: E402
 from recap.autorecap import daily_note_resolver  # noqa: E402
+from recap.shared import hook_io  # noqa: E402
 
 # Neutral layout the test vault uses (created by make_vault). Names are
 # intentionally generic — knowledge-gardener is format-agnostic, so the test
@@ -1049,3 +1051,34 @@ def test_push_reapplies_block_when_both_machines_created_the_daily_note(tmp_path
     assert "- 08:00 work on the other machine" in text
     assert text.count("<!-- kg-recap-sid:bothnew0 -->") == 1
     assert "<<<<<<<" not in text
+
+
+def test_failed_conflict_check_after_continue_aborts_instead_of_skipping(tmp_path, monkeypatch):
+    """A failing `git diff` must not be read as "no conflicts left".
+
+    Its stdout is empty on failure, the same as when nothing is unmerged, so
+    trusting it alone would `rebase --skip` and drop our commit.
+    """
+    (tmp_path / "daily").mkdir()
+    calls: list[list[str]] = []
+    unmerged = [(0, "daily/today.md\n", "")]  # then every check fails
+
+    def fake_git(args, cwd):
+        calls.append(args)
+        if args == ["push"]:
+            return 1, "", "rejected"
+        if args == ["pull", "--rebase"]:
+            return 1, "", "conflict"
+        if args == ["diff", "--name-only", "--diff-filter=U"]:
+            return unmerged.pop(0) if unmerged else (128, "", "fatal: index broken")
+        if args[:3] == ["-c", "core.editor=true", "rebase"]:
+            return 1, "", "could not commit"
+        return 0, "", ""
+
+    monkeypatch.setattr(daily_note, "run_git", fake_git)
+    monkeypatch.setattr(daily_note, "_rebase_in_progress", lambda repo_root: True)
+    daily_note._push_with_rebase(tmp_path, lambda rel, base, ours: "merged\n")
+
+    assert ["rebase", "--skip"] not in calls
+    assert ["rebase", "--abort"] in calls
+    assert "push abandoned" in hook_io.LOG_FILE.read_text()

@@ -121,8 +121,9 @@ def _resolve_rebase(repo_root: pathlib.Path, resolve: Resolver) -> bool:
     for _ in range(_MAX_REBASE_STEPS):
         if not _rebase_in_progress(repo_root):
             return True
-        code, out, _ = run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)
+        code, out, diff_err = run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)
         if code != 0:
+            log(f"conflict check failed: {diff_err[:200]!r}")
             return False
         for rel in out.split("\n"):
             if not rel:
@@ -142,13 +143,24 @@ def _resolve_rebase(repo_root: pathlib.Path, resolve: Resolver) -> bool:
                 return False
             log(f"rebase conflict resolved by re-applying recap blocks: {rel}")
         code, _, err = run_git(["-c", "core.editor=true", "rebase", "--continue"], repo_root)
-        if code != 0 and not run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)[1]:
-            # our blocks were already on the remote: the replayed commit is empty
-            if run_git(["diff", "--cached", "--quiet"], repo_root)[0] == 0:
-                run_git(["rebase", "--skip"], repo_root)
-                continue
-            log(f"git rebase --continue failed: {err[:200]!r}")
+        if code == 0:
+            continue
+        # a failed diff also prints nothing, so its exit code decides, not its output
+        diff_code, unmerged, diff_err = run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)
+        if diff_code != 0:
+            log(f"conflict check after rebase --continue failed: {diff_err[:200]!r}")
             return False
+        if unmerged:
+            continue  # the next replayed commit stopped on a conflict
+        # our blocks were already on the remote: the replayed commit is empty
+        if run_git(["diff", "--cached", "--quiet"], repo_root)[0] == 0:
+            skip_code, _, skip_err = run_git(["rebase", "--skip"], repo_root)
+            if skip_code == 0:
+                continue
+            log(f"git rebase --skip failed: {skip_err[:200]!r}")
+            return False
+        log(f"git rebase --continue failed: {err[:200]!r}")
+        return False
     return not _rebase_in_progress(repo_root)
 
 
