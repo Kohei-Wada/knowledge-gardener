@@ -1,6 +1,6 @@
 import pytest
 
-from recap.autorecap.block import upsert_session_block, extract_timeline_bullets
+from recap.autorecap.block import copy_session_blocks, upsert_session_block, extract_timeline_bullets
 
 LEGACY_KPT = "### KPT\n- Keep: a\n- Problem: b\n- Try: c"
 
@@ -267,3 +267,27 @@ def test_tag_escape_applies_on_update_too():
         timeline_bullets=["- 09:05 #237を完了"],
     )
     assert "- 09:05 `#237`を完了" in out
+
+
+def _block(sid8, bullet):
+    return upsert_session_block(
+        "", sid8, start_hhmm="09:00", end_hhmm="09:05", timeline_bullets=[bullet],
+    )
+
+
+def test_copy_session_blocks_keeps_both_sides_and_is_idempotent():
+    base = "# 2026-10-30\n" + _block("theirs01", "- 09:00  theirs")
+    ours = "# 2026-10-30\n" + _block("ours0001", "- 09:00  ours")
+    once = copy_session_blocks(base, ours)
+    assert "- 09:00  theirs" in once
+    assert once.count("<!-- kg-recap-sid:ours0001 -->") == 1
+    assert copy_session_blocks(once, ours) == once
+
+
+def test_copy_session_blocks_replaces_a_block_by_sid():
+    base = "# day\n" + _block("same0001", "- 09:00  older")
+    ours = "# day\n" + _block("same0001", "- 09:00  newer")
+    out = copy_session_blocks(base, ours)
+    assert "- 09:00  newer" in out
+    assert "older" not in out
+    assert out.count("<!-- kg-recap-sid:same0001 -->") == 1

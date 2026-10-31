@@ -997,3 +997,55 @@ def test_push_retries_after_rebasing_on_remote_changes(tmp_path):
     # and nothing is left half-rebased locally
     assert not (repo / ".git" / "rebase-merge").exists()
     assert not (repo / ".git" / "rebase-apply").exists()
+
+
+def test_push_reapplies_block_when_both_machines_created_the_daily_note(tmp_path):
+    """Two machines creating today's note independently must not strand the recap.
+
+    Both sides add the same path, so `pull --rebase` conflicts (add/add). The
+    recap is re-applied onto the remote's note instead of aborting, so both
+    machines' blocks survive and the branch does not diverge.
+    """
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    remote, other = _init_remote(tmp_path, repo)
+    today = _dt.date.today().isoformat()
+
+    other_daily = other / "vault" / DAILY_FOLDER_REL / f"{today}.md"
+    other_daily.parent.mkdir(parents=True, exist_ok=True)
+    other_daily.write_text(
+        "<!-- kg-recap-sid:othersid -->\n"
+        "## Session 08:00〜08:30  @other\n"
+        "\n"
+        "### Timeline\n"
+        "- 08:00 work on the other machine\n"
+        "<!-- /kg-recap-sid:othersid -->\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=other, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "other machine recap"], cwd=other, check=True)
+    subprocess.run(["git", "push", "-q"], cwd=other, check=True)
+
+    write_session_log(state, "bothnew0", ["09:00 tool=Edit target=a.md"])
+    fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
+    env = happy_env(vault, fake)
+    env["KG_AUTO_RECAP_NO_PUSH"] = "0"
+    run_hook({"session_id": "bothnew0-uuid"}, env_extra=env, state_home=state)
+
+    assert not (repo / ".git" / "rebase-merge").exists()
+    assert not (repo / ".git" / "rebase-apply").exists()
+    subprocess.run(["git", "fetch", "-q"], cwd=repo, check=True)
+    ahead_behind = subprocess.run(
+        ["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ahead_behind.stdout.split() == ["0", "0"]
+
+    subprocess.run(["git", "pull", "-q"], cwd=other, check=True)
+    text = other_daily.read_text()
+    assert text.count("<!-- kg-recap-sid:othersid -->") == 1
+    assert "- 08:00 work on the other machine" in text
+    assert text.count("<!-- kg-recap-sid:bothnew0 -->") == 1
+    assert "<<<<<<<" not in text

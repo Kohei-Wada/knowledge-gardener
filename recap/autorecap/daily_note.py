@@ -4,12 +4,18 @@ import datetime as _dt
 import os
 import pathlib
 import subprocess
+from typing import Callable
 
 from ..shared.hook_io import log
-from .block import upsert_session_block
+from .block import copy_session_blocks, upsert_session_block
 from .references import upsert_references
 
 _DATE_PLACEHOLDER = "{{date}}"
+_MAX_REBASE_STEPS = 50
+
+# (vault-relative path, base text, our text) -> merged text, or None when the
+# conflict is not ours to resolve.
+Resolver = Callable[[str, str, str], "str | None"]
 
 
 def build_commit_subject(today: str, marker_key: str) -> str:
@@ -36,6 +42,7 @@ def commit_and_push(
     repo_root: pathlib.Path,
     daily_path: pathlib.Path,
     marker_key: str,
+    resolve: Resolver | None = None,
 ) -> None:
     rel = daily_path.relative_to(repo_root) if str(daily_path).startswith(str(repo_root)) else daily_path
     # pre-commit (best-effort)
@@ -69,10 +76,11 @@ def commit_and_push(
     if os.environ.get("KG_AUTO_RECAP_NO_PUSH") == "1":
         log(f"push skipped (KG_AUTO_RECAP_NO_PUSH=1) for {today} {marker_key}")
         return
-    _push_with_rebase(repo_root)
+    _push_with_rebase(repo_root, resolve)
 
 
-def _push_with_rebase(repo_root: pathlib.Path, attempts: int = 3) -> None:
+def _push_with_rebase(repo_root: pathlib.Path, resolve: Resolver | None = None,
+                      attempts: int = 3) -> None:
     """Push, rebasing onto the remote when another machine pushed first.
 
     The same vault is recapped from several machines, so a rejected push is
@@ -85,12 +93,63 @@ def _push_with_rebase(repo_root: pathlib.Path, attempts: int = 3) -> None:
         if code == 0:
             return
         code, _, rebase_err = run_git(["pull", "--rebase"], repo_root)
-        if code != 0:
+        if code != 0 and not (resolve and _resolve_rebase(repo_root, resolve)):
             # Never leave the vault half-rebased for the next session to find.
             run_git(["rebase", "--abort"], repo_root)
             log(f"git pull --rebase failed, push abandoned: {rebase_err[:200]!r}")
             return
     log(f"git push failed after {attempts} attempts: {err[:200]!r}")
+
+
+def _rebase_in_progress(repo_root: pathlib.Path) -> bool:
+    for name in ("rebase-merge", "rebase-apply"):
+        code, out, _ = run_git(["rev-parse", "--git-path", name], repo_root)
+        if code == 0 and (repo_root / out.strip()).exists():
+            return True
+    return False
+
+
+def _resolve_rebase(repo_root: pathlib.Path, resolve: Resolver) -> bool:
+    """Finish a conflicted rebase by merging each conflicted daily note.
+
+    Another machine creating or recapping the same daily note makes every
+    rebase conflict on it (both sides add the file), so aborting would strand
+    the commit for good: each later recap stacks on the same conflict. Stage 2
+    is the remote's note, stage 3 ours. Returns False, leaving the rebase for
+    the caller to abort, on any conflict `resolve` does not claim.
+    """
+    for _ in range(_MAX_REBASE_STEPS):
+        if not _rebase_in_progress(repo_root):
+            return True
+        code, out, _ = run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)
+        if code != 0:
+            return False
+        for rel in out.split("\n"):
+            if not rel:
+                continue
+            code_b, base, _ = run_git(["show", f":2:{rel}"], repo_root)
+            code_o, ours, _ = run_git(["show", f":3:{rel}"], repo_root)
+            merged = resolve(rel, base, ours) if code_b == 0 and code_o == 0 else None
+            if merged is None:
+                log(f"rebase conflict not resolvable automatically: {rel}")
+                return False
+            try:
+                (repo_root / rel).write_text(merged, encoding="utf-8")
+            except OSError as e:
+                log(f"conflict write failed: {e!r}")
+                return False
+            if run_git(["add", rel], repo_root)[0] != 0:
+                return False
+            log(f"rebase conflict resolved by re-applying recap blocks: {rel}")
+        code, _, err = run_git(["-c", "core.editor=true", "rebase", "--continue"], repo_root)
+        if code != 0 and not run_git(["diff", "--name-only", "--diff-filter=U"], repo_root)[1]:
+            # our blocks were already on the remote: the replayed commit is empty
+            if run_git(["diff", "--cached", "--quiet"], repo_root)[0] == 0:
+                run_git(["rebase", "--skip"], repo_root)
+                continue
+            log(f"git rebase --continue failed: {err[:200]!r}")
+            return False
+    return not _rebase_in_progress(repo_root)
 
 
 def find_repo_root(start: pathlib.Path) -> pathlib.Path | None:
@@ -114,6 +173,8 @@ class DailyNote:
         self._repo_root = find_repo_root(vault)
         self._template = template
         self._today_str = today_str
+        self._insert_before = ""
+        self._replays: list[Callable[[str], str]] = []
 
     def _seed(self) -> str:
         """Initial body for a daily note that does not exist yet.
@@ -142,10 +203,15 @@ class DailyNote:
             if self._daily_path.exists()
             else self._seed()
         )
-        new = upsert_session_block(
-            existing, sid8, start_hhmm=start_hhmm, end_hhmm=end_hhmm,
-            timeline_bullets=timeline_bullets, insert_before=insert_before,
-        )
+        def replay(text: str) -> str:
+            return upsert_session_block(
+                text, sid8, start_hhmm=start_hhmm, end_hhmm=end_hhmm,
+                timeline_bullets=timeline_bullets, insert_before=insert_before,
+            )
+
+        self._insert_before = insert_before
+        self._replays = [replay]
+        new = replay(existing)
         if new == existing:
             return False
         tmp = self._daily_path.with_suffix(self._daily_path.suffix + ".tmp")
@@ -173,7 +239,11 @@ class DailyNote:
         except (OSError, ValueError) as e:
             log(f"references skipped: {e!r}")
             return False
-        new = upsert_references(existing, heading, note_rels, daily_rel_dir)
+        def replay(text: str) -> str:
+            return upsert_references(text, heading, note_rels, daily_rel_dir)
+
+        self._replays.append(replay)
+        new = replay(existing)
         if new == existing:
             return False
         tmp = self._daily_path.with_suffix(self._daily_path.suffix + ".tmp")
@@ -189,7 +259,17 @@ class DailyNote:
             return False
         return True
 
+    def _resolve_conflict(self, rel: str, base: str, ours: str) -> str | None:
+        if "kg-recap-sid:" not in ours:
+            return None
+        merged = copy_session_blocks(base, ours, self._insert_before)
+        if self._repo_root is not None and (self._repo_root / rel).resolve() == self._daily_path.resolve():
+            # what this run wrote, applied again on top of the remote's note
+            for replay in self._replays:
+                merged = replay(merged)
+        return merged
+
     def commit(self, marker_key: str) -> None:
         if self._repo_root is None:
             return
-        commit_and_push(self._repo_root, self._daily_path, marker_key)
+        commit_and_push(self._repo_root, self._daily_path, marker_key, self._resolve_conflict)
