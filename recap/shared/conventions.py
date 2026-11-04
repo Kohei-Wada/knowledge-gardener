@@ -21,12 +21,13 @@ def _linked_docs(readme: pathlib.Path) -> list[pathlib.Path]:
         text = readme.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    root = readme.parent.resolve()
     out: list[pathlib.Path] = []
     for target in _MD_LINK.findall(text):
         if "://" in target:
             continue
         path = (readme.parent / target).resolve()
-        if path.is_file():
+        if path.is_file() and path.is_relative_to(root):
             out.append(path)
     return out
 

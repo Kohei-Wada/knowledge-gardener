@@ -55,6 +55,13 @@ def test_skips_urls_missing_files_and_non_markdown(tmp_path):
     assert convention_files(vault) == [vault.parent / "README.md"]
 
 
+def test_skips_links_outside_the_readme_directory(tmp_path):
+    vault = _layout(tmp_path)
+    (tmp_path / "outside.md").write_text("secret\n")
+    (vault.parent / "README.md").write_text("[out](../outside.md)\n")
+    assert convention_files(vault) == [vault.parent / "README.md"]
+
+
 def test_linked_doc_is_part_of_the_vault_context(tmp_path):
     vault = _layout(tmp_path)
     (vault.parent / "README.md").write_text("[daily](docs/daily-notes.md)\n")
