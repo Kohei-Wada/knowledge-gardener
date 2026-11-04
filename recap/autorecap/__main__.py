@@ -17,6 +17,7 @@ import time
 import traceback
 
 from ..shared.hook_io import DEBOUNCE_SECONDS, DEFAULT_TIMEOUT, emit_continue, log
+from ..shared.conventions import convention_files
 from ..shared.fs import plugin_root, read_text
 from ..shared.paths import debounce_marker, session_log_path
 from ..shared.cursor import write_cursor
@@ -30,16 +31,15 @@ from .block import extract_timeline_bullets
 
 
 def load_vault_context(vault: pathlib.Path) -> str:
-    """Return the README excerpt used for daily-note discovery.
+    """Return the convention docs (READMEs + linked docs) used for daily-note discovery.
 
     The daily-note folder and filename are not pre-resolved here — they are
     discovered by Claude from the README inside the same prompt that composes
     the recap block (see parse_discovery / main).
     """
     readme_parts: list[str] = []
-    for candidate in (vault / "README.md", vault.parent / "README.md"):
-        if candidate.is_file():
-            readme_parts.append(f"--- {candidate} ---\n{read_text(candidate)}")
+    for candidate in convention_files(vault):
+        readme_parts.append(f"--- {candidate} ---\n{read_text(candidate)}")
     return "\n\n".join(readme_parts) or "(no README found)"
 
 
