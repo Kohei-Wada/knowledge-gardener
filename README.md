@@ -50,6 +50,8 @@ The README can live at either:
 
 `garden-plant` reads both and merges; folder-scoped READMEs (e.g. `$KG_VAULT/06_People/README.md`) are also consulted when relevant.
 
+The README may stay an index: local `.md` docs it links to (e.g. `docs/daily-notes.md`) count as part of the conventions. Auto-recap follows those links one hop.
+
 If no README is found in either location, `garden-plant` will refuse to write and tell you what's missing. That's intentional: silent defaults are how vaults end up inconsistent.
 
 ## How It Works

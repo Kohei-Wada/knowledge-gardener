@@ -9,6 +9,7 @@ import re
 import sys
 import typing
 
+from ..shared.conventions import convention_files
 from ..shared.fs import _resolve_under_vault
 from ..shared.paths import discovery_cache_path
 from ..shared.hook_io import log
@@ -45,9 +46,9 @@ _FILENAME_DATE_PLACEHOLDER = "{date}"
 
 
 def _read_readme_bytes(vault: pathlib.Path) -> bytes:
-    """Concatenate $KG_VAULT/README.md and $KG_VAULT/../README.md (if present)."""
+    """Concatenate the vault's convention files (READMEs plus the docs they link)."""
     parts: list[bytes] = []
-    for candidate in (vault / "README.md", vault.parent / "README.md"):
+    for candidate in convention_files(vault):
         try:
             parts.append(candidate.read_bytes())
         except OSError:
