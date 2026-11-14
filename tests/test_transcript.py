@@ -34,6 +34,17 @@ def test_filters_by_since_local_hhmm(tmp_path):
     assert "reply" in out
 
 
+def test_since_minute_itself_is_included(tmp_path):
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join([
+        _line("user", "2026-05-30T08:59:59.000Z", "minute before"),
+        _line("user", "2026-05-30T09:00:30.000Z", "cursor minute"),
+    ]) + "\n")
+    out = slice_transcript(str(p), "09:00", "2026-05-30")
+    assert "minute before" not in out
+    assert "cursor minute" in out
+
+
 def test_drops_thinking_and_tooluse_blocks(tmp_path):
     p = tmp_path / "t.jsonl"
     p.write_text("\n".join([

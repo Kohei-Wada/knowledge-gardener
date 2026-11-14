@@ -31,7 +31,10 @@ def _text_of(content) -> str:
 
 def slice_transcript(transcript_path: str | None, since_hhmm: str | None,
                      today_str: str, char_cap: int = 16000) -> str:
-    """Plain-text user/assistant turns for `today_str` with local HH:MM > since.
+    """Plain-text user/assistant turns for `today_str` with local HH:MM >= since.
+
+    The cursor minute is included: turns that landed in it after the last pass
+    would otherwise be lost, and the composer merges the overlap.
 
     Best-effort: returns "" on any missing/unreadable/garbled input. Drops
     thinking and tool_use/tool_result blocks (mechanical, already in Timeline).
@@ -60,7 +63,7 @@ def slice_transcript(transcript_path: str | None, since_hhmm: str | None,
         hhmm, date = stamp
         if date != today_str:
             continue
-        if since_hhmm and hhmm <= since_hhmm:
+        if since_hhmm and hhmm < since_hhmm:
             continue
         text = _text_of((d.get("message") or {}).get("content"))
         if text:

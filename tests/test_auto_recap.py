@@ -113,7 +113,8 @@ def write_session_log(state_home: Path, sid8: str, lines: list[str]) -> Path:
     return p
 
 
-def run_hook(payload: dict, *, env_extra: dict[str, str], state_home: Path) -> subprocess.CompletedProcess[str]:
+def run_hook(payload: dict, *, env_extra: dict[str, str], state_home: Path,
+             args: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["XDG_STATE_HOME"] = str(state_home)
     env["HOME"] = str(state_home.parent / "fakehome")
@@ -123,7 +124,7 @@ def run_hook(payload: dict, *, env_extra: dict[str, str], state_home: Path) -> s
     for k, v in env_extra.items():
         env[k] = v
     return subprocess.run(
-        [sys.executable, "-m", "recap.autorecap"],
+        [sys.executable, "-m", "recap.autorecap", *args],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -353,7 +354,7 @@ def test_writes_session_block_on_happy_path(tmp_path):
 
 
 def test_idempotent_replaces_existing_block(tmp_path):
-    """Two substantive runs over the SAME window (cursor + debounce cleared) →
+    """Two substantive runs over the SAME window (cursor + throttle marker cleared) →
     the AI Timeline is replaced, not duplicated."""
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
@@ -371,7 +372,7 @@ def test_idempotent_replaces_existing_block(tmp_path):
         "<!-- /kg-discovery -->\n" + timeline2
     )
     fake2 = make_fake_claude(tmp_path / "v2", updated)
-    # bypass debounce by clearing marker; also clear cursor so the aggregator
+    # bypass the throttle by clearing its marker; also clear cursor so the aggregator
     # re-processes the full log over the same window.
     sessions = state / "knowledge-gardener" / "sessions"
     (sessions / ".last-recap-testabcd").unlink(missing_ok=True)
@@ -515,28 +516,292 @@ def test_malformed_stdin_does_not_crash(tmp_path):
     assert_continue(res.stdout)
 
 
-# --- debounce ---------------------------------------------------------------
+# --- throttle and final pass --------------------------------------------------
 
-def test_debounce_skips_rapid_reinvocation(tmp_path):
+FINAL_WORKER = ("--final-worker",)
+
+
+def _append_log(state: Path, sid8: str, line: str) -> None:
+    sessions = state / "knowledge-gardener" / "sessions"
+    with (sessions / f"{_dt.date.today().isoformat()}-{sid8}.log").open("a") as fh:
+        fh.write(line + "\n")
+
+
+def _timeline(text: str) -> str:
+    return "### Timeline\n\n- " + text + "\n"
+
+
+def test_stop_within_interval_leaves_the_vault_alone(tmp_path):
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    note = daily / f"{_dt.date.today().isoformat()}.md"
+    before = note.read_text()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout
+
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    recorded = tmp_path / "second-prompt.txt"
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(
+        tmp_path / "v2", _timeline("09:00–09:10 should not appear"), record_prompt_to=recorded))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+
+    assert not recorded.exists(), "a throttled Stop must not call claude"
+    assert note.read_text() == before
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout == head
+
+
+def test_stop_after_interval_composes_again(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
-    canned = _canned_recap_with_discovery()
-    fake = make_fake_claude(tmp_path, canned)
-    env = happy_env(vault, fake)
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
+    env["KG_RECAP_INTERVAL_MINUTES"] = "0"
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", _timeline("09:00–09:10 second pass")))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert "second pass" in (daily / f"{_dt.date.today().isoformat()}.md").read_text()
+
+
+def test_nonsubstantive_stop_writes_nothing_and_does_not_throttle(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    sid8 = "earlyrun"
     today = _dt.date.today().isoformat()
+    env_common = {"KG_DAILY_FILENAME": f"{today}.md"}
+    write_session_log(state, sid8, ["09:00 tool=mcp__Notion__notion-fetch target=x",
+                                    "09:00 tool=WebSearch target=y"])
+    recorded = tmp_path / "prompt.txt"
+    fake1 = make_fake_claude(tmp_path / "f1", "SHOULD_NOT_APPEAR", record_prompt_to=recorded)
+    run_hook({"session_id": sid8 + "-uuid"},
+             env_extra={**happy_env(vault, fake1), **env_common}, state_home=state)
+    note = daily / f"{today}.md"
+    assert not note.exists()
+    assert not recorded.exists()
 
-    # immediate re-invocation → debounce should skip
-    time.sleep(0.1)
-    # alter the fake output so we can detect if it ran
-    fake2 = make_fake_claude(tmp_path / "v2", canned.replace("a/b.py を編集", "should not appear"))
-    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(fake2)
+    # the first substantive Stop right after it still writes at once
+    _append_log(state, sid8, "09:01 tool=Edit target=a.md")
+    fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
+    run_hook({"session_id": sid8 + "-uuid"},
+             env_extra={**happy_env(vault, fake2), **env_common}, state_home=state)
+    assert "11:00–11:05 a/b.py を編集" in note.read_text()
+
+
+def test_final_pass_ignores_the_throttle(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", _timeline("09:00–09:10 final pass")))
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
+    assert_continue(res.stdout)
+    assert "final pass" in (daily / f"{_dt.date.today().isoformat()}.md").read_text()
+
+
+def test_final_pass_without_new_activity_does_nothing(tmp_path):
+    vault, daily, repo = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout
+
+    recorded = tmp_path / "final-prompt.txt"
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(
+        tmp_path / "v2", _timeline("should not appear"), record_prompt_to=recorded))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
+    assert not recorded.exists()
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout == head
+
+
+def test_final_pass_writes_the_mechanical_timeline_for_a_small_session(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    sid8 = "readonly"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, sid8,
+                      ["09:00 tool=mcp__Notion__notion-fetch target=x",
+                       "09:00 tool=WebSearch target=y"])
+    recorded = tmp_path / "prompt.txt"
+    env = happy_env(vault, make_fake_claude(tmp_path, "SHOULD_NOT_APPEAR", record_prompt_to=recorded))
+    # A non-substantive session never spends an LLM discovery call, so it needs a
+    # pre-resolved path (folder+filename) for the Timeline-only write to land.
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    res = run_hook({"session_id": sid8 + "-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
+    assert res.returncode == 0
     content = (daily / f"{today}.md").read_text()
-    assert "should not appear" not in content
-    assert "a/b.py を編集" in content
+    assert "- 09:00  Web×1, MCP Notion×1" in content
+    assert not recorded.exists()
+
+
+def test_final_hook_returns_at_once_and_the_detached_worker_writes(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery(), sleep=2))
+    t0 = time.monotonic()
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=("--final",))
+    elapsed = time.monotonic() - t0
+    assert_continue(res.stdout)
+    assert elapsed < 1.5, f"SessionEnd hook took {elapsed:.2f}s"
+    note = daily / f"{_dt.date.today().isoformat()}.md"
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not (note.exists() and "a/b.py を編集" in note.read_text()):
+        time.sleep(0.2)
+    assert "a/b.py を編集" in note.read_text()
+
+
+def test_final_hook_is_a_no_op_without_opt_in(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
+    env["KG_AUTO_RECAP"] = "0"
+    res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=("--final",))
+    assert_continue(res.stdout)
+    time.sleep(1)
+    assert not (daily / f"{_dt.date.today().isoformat()}.md").exists()
+
+
+def test_later_pass_gets_the_previous_timeline_and_only_the_new_slice(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 a.md を直した(理由: X)")))
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    env["KG_RECAP_INTERVAL_MINUTES"] = "0"
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    recorded = tmp_path / "second-prompt.txt"
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(
+        tmp_path / "v2", _timeline("09:00–09:10 merged"), record_prompt_to=recorded))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+
+    prompt = recorded.read_text(encoding="utf-8")
+    assert "- 09:00–09:00 a.md を直した(理由: X)" in prompt
+    assert "- 09:10  Edit b.md" in prompt
+    assert "- 09:00  Edit a.md" in prompt       # the cursor minute is repeated, not lost
+    assert "{{" not in prompt
+
+
+def test_first_pass_prompt_says_there_is_no_previous_timeline(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    recorded = tmp_path / "prompt.txt"
+    env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 x"), record_prompt_to=recorded))
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert "(none: this is the first pass for the session)" in recorded.read_text(encoding="utf-8")
+
+
+def test_failed_later_pass_keeps_the_composed_timeline(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 composed bullet")))
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    env["KG_RECAP_INTERVAL_MINUTES"] = "0"
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    note = daily / f"{today}.md"
+    before = note.read_text()
+
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", "boom", exit_code=1))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert note.read_text() == before
+
+    # the uncovered activity is still picked up by the next pass
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v3", _timeline("09:00–09:10 recovered")))
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
+    assert "recovered" in note.read_text()
+
+
+def test_mechanical_timeline_is_refreshed_by_a_later_mechanical_pass(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    env = happy_env(vault, make_fake_claude(tmp_path, "boom", exit_code=1))
+    env["KG_DAILY_FILENAME"] = f"{today}.md"
+    env["KG_RECAP_INTERVAL_MINUTES"] = "0"
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    note = daily / f"{today}.md"
+    assert "- 09:00  Edit a.md" in note.read_text()
+
+    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+    assert "- 09:10  Edit b.md" in note.read_text()
+
+
+def test_headless_call_is_lean_and_cannot_recurse(tmp_path):
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    argv_file = tmp_path / "argv.txt"
+    env_file = tmp_path / "env.txt"
+    fake = tmp_path / "fake_claude.sh"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$@\" > {argv_file.as_posix()!r}\n"
+        f"printf '%s' \"$KG_AUTO_RECAP\" > {env_file.as_posix()!r}\n"
+        "cat > /dev/null\n"
+        "cat <<'KGEOF'\n" + _canned_recap_with_discovery() + "\nKGEOF\n"
+    )
+    fake.chmod(0o755)
+    env = happy_env(vault, fake)
+    env["KG_AUTO_RECAP_MODEL"] = "haiku"
+    run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
+
+    argv = argv_file.read_text().split("\n")
+    assert argv[0] == "-p"
+    assert "--safe-mode" in argv and "--no-session-persistence" in argv
+    assert argv[argv.index("--tools") + 1] == ""
+    assert argv[argv.index("--model") + 1] == "haiku"
+    assert argv[argv.index("--system-prompt") + 1]
+    assert env_file.read_text() == "0"
+
+
+def test_headless_call_defaults_to_sonnet(tmp_path, monkeypatch):
+    from recap.autorecap import __main__ as autorecap
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.delenv("KG_AUTO_RECAP_MODEL", raising=False)
+    monkeypatch.setattr(autorecap.subprocess, "run", fake_run)
+    assert autorecap.call_claude("prompt", timeout=5) == "ok"
+    assert seen["cmd"][seen["cmd"].index("--model") + 1] == "sonnet"
+
+
+def test_no_commit_when_the_note_already_matches_head(tmp_path, monkeypatch):
+    """A note that equals HEAD (another session's commit carried the block, or a
+    fixer hook restored it) used to end in `git commit failed ... nothing to commit`."""
+    vault, daily, repo = make_vault(tmp_path)
+    monkeypatch.setenv("KG_AUTO_RECAP_NO_PUSH", "1")
+    note = daily / "2026-01-01.md"
+    note.write_text("block\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "other session"], cwd=repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout
+
+    daily_note.commit_and_push(repo, note, "testabcd")
+
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout == head
+    log_file = hook_io.LOG_FILE
+    assert not log_file.exists() or "git commit failed" not in log_file.read_text()
 
 
 # --- git commit -------------------------------------------------------------
@@ -594,60 +859,6 @@ def test_two_stops_coalesce_into_one_block(tmp_path):
     assert (sessions / f"{sid8}.cursor").read_text().strip() == "10:30"
 
 
-def test_topicless_then_substantive_keeps_timeline(tmp_path):
-    vault, daily, _ = make_vault(tmp_path)
-    state = tmp_path / "state"
-    sid8 = "topicles"
-    today = _dt.date.today()
-    # warm path needs folder + filename resolved
-    env_common = {"KG_DAILY_FILENAME": f"{today.isoformat()}.md"}
-    # Stop 1: non-substantive (2 read-only calls) → Timeline-only, no topic, no claude
-    write_session_log(state, sid8, ["09:00 tool=mcp__Notion__notion-fetch target=x",
-                                    "09:00 tool=WebSearch target=y"])
-    fake1 = make_fake_claude(tmp_path / "f1", "no timeline section here")
-    run_hook({"session_id": sid8 + "-uuid"},
-             env_extra={**happy_env(vault, fake1), **env_common}, state_home=state)
-    note = daily / f"{today.isoformat()}.md"
-    assert "### Timeline" in note.read_text()
-    # Stop 2: substantive (Edit); must NOT eat the Timeline heading
-    sessions = state / "knowledge-gardener" / "sessions"
-    with (sessions / f"{today.isoformat()}-{sid8}.log").open("a") as fh:
-        fh.write("10:00 tool=Edit target=a.md\n")
-    (sessions / f".last-recap-{sid8}").unlink(missing_ok=True)
-    fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
-    run_hook({"session_id": sid8 + "-uuid"},
-             env_extra={**happy_env(vault, fake2), **env_common}, state_home=state)
-    text = note.read_text()
-    assert "### Timeline" in text                         # heading survived the update
-    # Second stop's canned output has TIMELINE_BODY → AI timeline replaces deterministic.
-    assert "11:00–11:05 a/b.py を編集" in text
-    assert "### KPT" not in text
-    assert text.count(f"<!-- kg-recap-sid:{sid8} -->") == 1
-
-
-def test_nonsubstantive_stop_appends_timeline_without_calling_claude(tmp_path):
-    vault, daily, _ = make_vault(tmp_path)
-    state = tmp_path / "state"
-    sid8 = "readonly"
-    today = _dt.date.today().isoformat()
-    write_session_log(state, sid8,
-                      ["09:00 tool=mcp__Notion__notion-fetch target=x",
-                       "09:00 tool=WebSearch target=y"])
-    fake = make_fake_claude(tmp_path, "SHOULD_NOT_APPEAR")
-    env = happy_env(vault, fake)
-    # A non-substantive window never spends an LLM discovery call, so it needs a
-    # pre-resolved path (folder+filename) for the Timeline-only write to land.
-    env["KG_DAILY_FILENAME"] = f"{today}.md"
-    res = run_hook({"session_id": sid8 + "-uuid"}, env_extra=env, state_home=state)
-    assert res.returncode == 0
-    note = daily / f"{today}.md"
-    assert note.exists()
-    content = note.read_text()
-    assert "### Timeline" in content
-    assert "SHOULD_NOT_APPEAR" not in content
-    assert "### KPT" not in content
-
-
 def test_rerun_same_window_is_idempotent(tmp_path):
     """Stop hook re-runs with no new activity → no duplicate marker in the daily."""
     vault, daily, _ = make_vault(tmp_path)
@@ -659,7 +870,7 @@ def test_rerun_same_window_is_idempotent(tmp_path):
     fake = make_fake_claude(tmp_path / "fake", _canned_recap_with_discovery())
     # First run.
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake), state_home=state)
-    # Clear debounce to force the second run through the pipeline.
+    # Clear the throttle marker so only the lack of new activity stops the second run.
     sessions = state / "knowledge-gardener" / "sessions"
     (sessions / f".last-recap-{sid8}").unlink(missing_ok=True)
     # Second run with no new log activity → cursor at 11:00 → aggregator
