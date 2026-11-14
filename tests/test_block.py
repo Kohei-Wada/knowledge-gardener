@@ -291,3 +291,13 @@ def test_copy_session_blocks_replaces_a_block_by_sid():
     assert "- 09:00  newer" in out
     assert "older" not in out
     assert out.count("<!-- kg-recap-sid:same0001 -->") == 1
+
+
+def test_existing_timeline_bullets_reads_only_this_session():
+    from recap.autorecap.block import existing_timeline_bullets
+    note = upsert_session_block("", "aaaaaaaa", start_hhmm="09:00", end_hhmm="09:10",
+                                timeline_bullets=["- 09:00–09:10 first"])
+    note = upsert_session_block(note, "bbbbbbbb", start_hhmm="10:00", end_hhmm="10:10",
+                                timeline_bullets=["- 10:00–10:10 second", "- 10:10–10:10 third"])
+    assert existing_timeline_bullets(note, "bbbbbbbb") == ["- 10:00–10:10 second", "- 10:10–10:10 third"]
+    assert existing_timeline_bullets(note, "cccccccc") == []

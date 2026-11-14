@@ -3,7 +3,7 @@
 Used by:
 - recap/capture/ (PostToolUse hook — writes session log entries)
 - recap/aggregate/ (reads session logs)
-- recap/autorecap/ (reads session log, writes debounce marker)
+- recap/autorecap/ (reads session log, writes throttle marker)
 
 All three previously duplicated the XDG_STATE_HOME resolution and the
 "<state>/knowledge-gardener/sessions/" path construction. Centralized here
@@ -44,18 +44,25 @@ def session_log_path(sid8: str, date: _dt.date | None = None) -> pathlib.Path:
     return sessions_dir() / f"{d}-{safe_sid}.log"
 
 
-def debounce_marker(sid8: str) -> pathlib.Path:
-    """Path to the per-session auto-recap debounce marker."""
+def last_recap_marker(sid8: str) -> pathlib.Path:
+    """Path to the per-session throttle marker; its mtime is when the last pass started."""
     safe_sid = (sid8 or "unknown")[:8] or "unknown"
     return sessions_dir() / f".last-recap-{safe_sid}"
+
+
+def recap_lock_path(sid8: str) -> pathlib.Path:
+    """Path to the per-session lock that keeps two passes from overlapping."""
+    safe_sid = (sid8 or "unknown")[:8] or "unknown"
+    return sessions_dir() / f".recap-{safe_sid}.lock"
 
 
 def cursor_path(sid8: str) -> pathlib.Path:
     """Path to the per-session recap cursor file.
 
     Holds a single HH:MM line — the last log entry included in the most
-    recent successfully-written block. Read by auto_recap.py to scope the
-    next aggregation window via --since.
+    recent successfully-written block; scopes the next pass's new slice. Its
+    mtime is when that pass read the log, so a log newer than it has activity
+    no block covers yet.
     """
     safe_sid = (sid8 or "unknown")[:8] or "unknown"
     return sessions_dir() / f"{safe_sid}.cursor"

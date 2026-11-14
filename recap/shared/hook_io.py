@@ -11,7 +11,6 @@ import pathlib
 import sys
 
 DEFAULT_TIMEOUT = 180
-DEBOUNCE_SECONDS = 60
 LOG_FILE = pathlib.Path.home() / ".local" / "state" / "knowledge-gardener" / "auto-recap.log"
 
 

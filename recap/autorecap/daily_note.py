@@ -62,6 +62,9 @@ def commit_and_push(
     if code != 0:
         log(f"git add failed: {err[:200]!r}")
         return
+    # already at HEAD: another session committed our block, or a fixer hook restored the committed text
+    if run_git(["diff", "--cached", "--quiet", "--", str(rel)], repo_root)[0] == 0:
+        return
     today = _dt.date.today().isoformat()
     subject = build_commit_subject(today, marker_key)
     # Path-limited: the vault is shared, so the index can hold files staged by

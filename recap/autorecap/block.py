@@ -32,6 +32,15 @@ def extract_timeline_bullets(text: str) -> list[str] | None:
     return [ln for ln in lines if ln.strip()]
 
 
+def existing_timeline_bullets(note_text: str, sid8: str) -> list[str]:
+    """The Timeline bullets the note holds for this session; [] when it has none."""
+    om = _open_re(sid8).search(note_text)
+    cm = _close_re(sid8).search(note_text)
+    if not (om and cm and cm.start() > om.start()):
+        return []
+    return extract_timeline_bullets(note_text[om.start():cm.start()]) or []
+
+
 _TAG_RE = re.compile(r"(?:(?<=\s)|^)#([\w/-]+)")
 _CODE_SPAN_RE = re.compile(r"(`[^`]*`)")
 
