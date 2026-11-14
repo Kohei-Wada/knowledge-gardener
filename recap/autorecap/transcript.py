@@ -5,16 +5,15 @@ import json
 import pathlib
 
 
-def _local_hhmm_and_date(ts: str) -> tuple[str, str] | None:
-    """UTC ISO ('...Z') → (local HH:MM, local YYYY-MM-DD). None if unparseable."""
+def _epoch_and_date(ts: str) -> tuple[float, str] | None:
+    """UTC ISO ('...Z') → (epoch seconds, local YYYY-MM-DD). None if unparseable."""
     try:
         dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
-    local = dt.astimezone()
-    return local.strftime("%H:%M"), local.date().isoformat()
+    return dt.timestamp(), dt.astimezone().date().isoformat()
 
 
 def _text_of(content) -> str:
@@ -29,12 +28,9 @@ def _text_of(content) -> str:
     return ""
 
 
-def slice_transcript(transcript_path: str | None, since_hhmm: str | None,
+def slice_transcript(transcript_path: str | None, since: float | None,
                      today_str: str, char_cap: int = 16000) -> str:
-    """Plain-text user/assistant turns for `today_str` with local HH:MM >= since.
-
-    The cursor minute is included: turns that landed in it after the last pass
-    would otherwise be lost, and the composer merges the overlap.
+    """Plain-text user/assistant turns for `today_str` stamped after `since` (epoch seconds).
 
     Best-effort: returns "" on any missing/unreadable/garbled input. Drops
     thinking and tool_use/tool_result blocks (mechanical, already in Timeline).
@@ -57,13 +53,13 @@ def slice_transcript(transcript_path: str | None, since_hhmm: str | None,
             continue
         if not isinstance(d, dict) or d.get("type") not in ("user", "assistant"):
             continue
-        stamp = _local_hhmm_and_date(d.get("timestamp") or "")
+        stamp = _epoch_and_date(d.get("timestamp") or "")
         if stamp is None:
             continue
-        hhmm, date = stamp
+        epoch, date = stamp
         if date != today_str:
             continue
-        if since_hhmm and hhmm < since_hhmm:
+        if since is not None and epoch <= since:
             continue
         text = _text_of((d.get("message") or {}).get("content"))
         if text:

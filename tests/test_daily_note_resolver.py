@@ -35,7 +35,7 @@ def _ctx_with_vault(tmp_path):
     vault = tmp_path / "vault"
     (vault / "04_DailyNotes").mkdir(parents=True)
     ctx = recap_context.RecapContext(
-        sid8="abcd1234", vault=vault, today_str="2026-05-29", since=None, transcript_path=None
+        sid8="abcd1234", vault=vault, today_str="2026-05-29", transcript_path=None
     )
     return ctx, vault
 

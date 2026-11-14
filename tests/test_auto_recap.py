@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -25,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 from recap.autorecap import daily_note  # noqa: E402
 from recap.autorecap import daily_note_resolver  # noqa: E402
 from recap.shared import hook_io  # noqa: E402
+from tests.transcripts import write_transcript  # noqa: E402
 
 # Neutral layout the test vault uses (created by make_vault). Names are
 # intentionally generic — knowledge-gardener is format-agnostic, so the test
@@ -104,13 +106,13 @@ def make_vault(tmp_path: Path) -> tuple[Path, Path, Path]:
     return vault, daily, repo
 
 
-def write_session_log(state_home: Path, sid8: str, lines: list[str]) -> Path:
-    sessions = state_home / "knowledge-gardener" / "sessions"
-    sessions.mkdir(parents=True, exist_ok=True)
-    today = _dt.date.today().isoformat()
-    p = sessions / f"{today}-{sid8}.log"
-    p.write_text("\n".join(lines) + "\n")
-    return p
+def _transcript_path(state_home: Path, session_id: str) -> Path:
+    return state_home / "transcripts" / f"{session_id}.jsonl"
+
+
+def write_session_log(state_home: Path, sid8: str, lines: list[str], vault: Path | None = None) -> Path:
+    """Append tool calls to the session's transcript (see tests/transcripts.py for the line format)."""
+    return write_transcript(_transcript_path(state_home, sid8 + "-uuid"), lines, vault)
 
 
 def run_hook(payload: dict, *, env_extra: dict[str, str], state_home: Path,
@@ -123,6 +125,9 @@ def run_hook(payload: dict, *, env_extra: dict[str, str], state_home: Path,
     env["PYTHONPATH"] = str(REPO_ROOT)
     for k, v in env_extra.items():
         env[k] = v
+    transcript = _transcript_path(state_home, str(payload.get("session_id")))
+    if "transcript_path" not in payload and transcript.is_file():
+        payload = {**payload, "transcript_path": str(transcript)}
     return subprocess.run(
         [sys.executable, "-m", "recap.autorecap", *args],
         input=json.dumps(payload),
@@ -174,7 +179,7 @@ CANNED_RECAP = _canned_recap_with_discovery()
 def test_no_op_when_env_unset(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     res = run_hook(
         {"session_id": "testabcd-uuid"},
         env_extra={"KG_VAULT": str(vault)},  # KG_AUTO_RECAP NOT set
@@ -188,7 +193,7 @@ def test_no_op_when_env_unset(tmp_path):
 
 def test_no_op_when_no_vault(tmp_path):
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     res = run_hook(
         {"session_id": "testabcd-uuid"},
         env_extra={"KG_AUTO_RECAP": "1"},  # KG_VAULT unset
@@ -217,7 +222,7 @@ def test_writes_via_discovery_when_env_unset(tmp_path):
     """With KG_DAILY_FOLDER unset, Claude's kg-discovery block drives the write."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     # remove both env keys so only the kg-discovery block can resolve the path
@@ -233,7 +238,7 @@ def test_no_op_when_env_unset_and_no_discovery(tmp_path):
     """No env override and no kg-discovery block → no-op (never guess a folder)."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]
@@ -248,7 +253,7 @@ def test_no_op_when_daily_folder_path_invalid(tmp_path):
     """When KG_DAILY_FOLDER points at a missing path, auto-recap degrades to no-op."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, CANNED_RECAP)
     env = happy_env(vault, fake)
     env["KG_DAILY_FOLDER"] = "nonexistent-folder"
@@ -270,7 +275,7 @@ def test_logs_hint_when_discovery_prefixes_vault_basename(tmp_path):
     """
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     bad_folder = f"{vault.name}/{DAILY_FOLDER_REL}"
     fake = make_fake_claude(
         tmp_path,
@@ -297,7 +302,7 @@ def test_env_override_wins_over_discovery(tmp_path):
     alt = vault / "alt-daily"
     alt.mkdir()
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     # Claude discovers DAILY_FOLDER_REL ("daily") but env points at "alt-daily"
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery(folder=DAILY_FOLDER_REL))
     env = happy_env(vault, fake)
@@ -313,7 +318,7 @@ def test_insert_before_anchor_places_block_above_heading(tmp_path):
     """KG_DAILY_INSERT_BEFORE makes the recap block land above the named heading."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     today = _dt.date.today().isoformat()
     # pre-seed the daily note with a trailing section the anchor should land above
     (daily / f"{today}.md").write_text(
@@ -340,7 +345,7 @@ def test_writes_session_block_on_happy_path(tmp_path):
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
     write_session_log(state, "testabcd",
-                      ["09:00 tool=Edit target=a.md", "09:05 tool=Bash target=git commit -m x"])
+                      ["00:00 tool=Edit target=a.md", "09:05 tool=Bash target=git commit -m x"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=happy_env(vault, fake), state_home=state)
     assert res.returncode == 0
@@ -356,7 +361,7 @@ def test_idempotent_replaces_existing_block(tmp_path):
     the AI Timeline is replaced, not duplicated."""
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake1 = make_fake_claude(tmp_path / "v1", _canned_recap_with_discovery())
     env = happy_env(vault, fake1)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -374,7 +379,6 @@ def test_idempotent_replaces_existing_block(tmp_path):
     # re-processes the full log over the same window.
     sessions = state / "knowledge-gardener" / "sessions"
     (sessions / ".last-recap-testabcd").unlink(missing_ok=True)
-    (sessions / "testabcd.cursor").unlink(missing_ok=True)
 
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(fake2)
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
@@ -393,7 +397,7 @@ def test_llm_success_uses_ai_timeline(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     # Canned output includes TIMELINE_BODY → AI timeline should be used.
     fake = make_fake_claude(tmp_path, TIMELINE_BODY)
     env = happy_env(vault, fake)
@@ -412,7 +416,7 @@ def test_llm_failure_writes_deterministic_timeline(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, "", exit_code=2)
     env = happy_env(vault, fake)
     # Pre-resolve the daily path so the LLM failure does not block the write.
@@ -441,7 +445,7 @@ def test_claude_output_without_a_timeline_section_falls_back_to_deterministic(tm
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     # Exit 0, non-empty, but no `### Timeline` heading anywhere.
     fake = make_fake_claude(tmp_path, "just some prose, no timeline section")
     env = happy_env(vault, fake)
@@ -456,7 +460,7 @@ def test_claude_output_without_a_timeline_section_falls_back_to_deterministic(tm
     content = note.read_text()
     assert "<!-- kg-recap-sid:testabcd -->" in content
     assert "### Timeline" in content
-    assert "- 09:00  Edit a.md" in content              # deterministic bullets used
+    assert "- 00:00  Edit a.md" in content              # deterministic bullets used
     assert "just some prose" not in content             # raw model output never leaks in
     assert "11:00–11:05 a/b.py を編集" not in content    # not the AI TIMELINE_BODY bullet
     assert "### KPT" not in content
@@ -466,7 +470,7 @@ def test_no_op_when_claude_nonzero_exit(tmp_path):
     """LLM failure with NO pre-resolved path (cold-cache, no KG_DAILY_FILENAME) → no-op."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, "", exit_code=2)
     res = run_hook(
         {"session_id": "testabcd-uuid"},
@@ -482,7 +486,7 @@ def test_no_op_when_claude_nonzero_exit(tmp_path):
 def test_no_op_when_claude_binary_missing(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     res = run_hook(
         {"session_id": "testabcd-uuid"},
         env_extra={
@@ -520,9 +524,7 @@ FINAL_WORKER = ("--final-worker",)
 
 
 def _append_log(state: Path, sid8: str, line: str) -> None:
-    sessions = state / "knowledge-gardener" / "sessions"
-    with (sessions / f"{_dt.date.today().isoformat()}-{sid8}.log").open("a") as fh:
-        fh.write(line + "\n")
+    write_session_log(state, sid8, [line])
 
 
 def _timeline(text: str) -> str:
@@ -532,14 +534,14 @@ def _timeline(text: str) -> str:
 def test_stop_within_interval_leaves_the_vault_alone(tmp_path):
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     note = daily / f"{_dt.date.today().isoformat()}.md"
     before = note.read_text()
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     recorded = tmp_path / "second-prompt.txt"
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(
         tmp_path / "v2", _timeline("09:00–09:10 should not appear"), record_prompt_to=recorded))
@@ -553,12 +555,12 @@ def test_stop_within_interval_leaves_the_vault_alone(tmp_path):
 def test_stop_after_interval_composes_again(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     env["KG_RECAP_INTERVAL_MINUTES"] = "0"
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", _timeline("09:00–09:10 second pass")))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     assert "second pass" in (daily / f"{_dt.date.today().isoformat()}.md").read_text()
@@ -570,8 +572,8 @@ def test_nonsubstantive_stop_writes_nothing_and_does_not_throttle(tmp_path):
     sid8 = "earlyrun"
     today = _dt.date.today().isoformat()
     env_common = {"KG_DAILY_FILENAME": f"{today}.md"}
-    write_session_log(state, sid8, ["09:00 tool=mcp__Notion__notion-fetch target=x",
-                                    "09:00 tool=WebSearch target=y"])
+    write_session_log(state, sid8, ["00:00 tool=mcp__Notion__notion-fetch target=x",
+                                    "00:00 tool=WebSearch target=y"])
     recorded = tmp_path / "prompt.txt"
     fake1 = make_fake_claude(tmp_path / "f1", "SHOULD_NOT_APPEAR", record_prompt_to=recorded)
     run_hook({"session_id": sid8 + "-uuid"},
@@ -581,7 +583,7 @@ def test_nonsubstantive_stop_writes_nothing_and_does_not_throttle(tmp_path):
     assert not recorded.exists()
 
     # the first substantive Stop right after it still writes at once
-    _append_log(state, sid8, "09:01 tool=Edit target=a.md")
+    _append_log(state, sid8, "now tool=Edit target=a.md")
     fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
     run_hook({"session_id": sid8 + "-uuid"},
              env_extra={**happy_env(vault, fake2), **env_common}, state_home=state)
@@ -591,11 +593,11 @@ def test_nonsubstantive_stop_writes_nothing_and_does_not_throttle(tmp_path):
 def test_final_pass_ignores_the_throttle(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", _timeline("09:00–09:10 final pass")))
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
     assert_continue(res.stdout)
@@ -605,7 +607,7 @@ def test_final_pass_ignores_the_throttle(tmp_path):
 def test_final_pass_without_new_activity_does_nothing(tmp_path):
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout
@@ -624,8 +626,8 @@ def test_final_pass_writes_the_mechanical_timeline_for_a_small_session(tmp_path)
     sid8 = "readonly"
     today = _dt.date.today().isoformat()
     write_session_log(state, sid8,
-                      ["09:00 tool=mcp__Notion__notion-fetch target=x",
-                       "09:00 tool=WebSearch target=y"])
+                      ["00:00 tool=mcp__Notion__notion-fetch target=x",
+                       "00:00 tool=WebSearch target=y"])
     recorded = tmp_path / "prompt.txt"
     env = happy_env(vault, make_fake_claude(tmp_path, "SHOULD_NOT_APPEAR", record_prompt_to=recorded))
     # A non-substantive session never spends an LLM discovery call, so it needs a
@@ -634,14 +636,14 @@ def test_final_pass_writes_the_mechanical_timeline_for_a_small_session(tmp_path)
     res = run_hook({"session_id": sid8 + "-uuid"}, env_extra=env, state_home=state, args=FINAL_WORKER)
     assert res.returncode == 0
     content = (daily / f"{today}.md").read_text()
-    assert "- 09:00  Web×1, MCP Notion×1" in content
+    assert "- 00:00  Web×1, MCP Notion×1" in content
     assert not recorded.exists()
 
 
 def test_final_hook_returns_at_once_and_the_detached_worker_writes(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery(), sleep=2))
     t0 = time.monotonic()
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=("--final",))
@@ -658,7 +660,7 @@ def test_final_hook_returns_at_once_and_the_detached_worker_writes(tmp_path):
 def test_final_hook_is_a_no_op_without_opt_in(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _canned_recap_with_discovery()))
     env["KG_AUTO_RECAP"] = "0"
     res = run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state, args=("--final",))
@@ -671,13 +673,13 @@ def test_later_pass_gets_the_previous_timeline_and_only_the_new_slice(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 a.md を直した(理由: X)")))
     env["KG_DAILY_FILENAME"] = f"{today}.md"
     env["KG_RECAP_INTERVAL_MINUTES"] = "0"
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     recorded = tmp_path / "second-prompt.txt"
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(
         tmp_path / "v2", _timeline("09:00–09:10 merged"), record_prompt_to=recorded))
@@ -685,8 +687,8 @@ def test_later_pass_gets_the_previous_timeline_and_only_the_new_slice(tmp_path):
 
     prompt = recorded.read_text(encoding="utf-8")
     assert "- 09:00–09:00 a.md を直した(理由: X)" in prompt
-    assert "- 09:10  Edit b.md" in prompt
-    assert "- 09:00  Edit a.md" in prompt       # the cursor minute is repeated, not lost
+    assert re.search(r"- \d\d:\d\d  Edit b\.md", prompt)
+    assert "- 00:00  Edit a.md" not in prompt   # only the slice after the previous pass
     assert "{{" not in prompt
 
 
@@ -694,7 +696,7 @@ def test_first_pass_prompt_says_there_is_no_previous_timeline(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     recorded = tmp_path / "prompt.txt"
     env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 x"), record_prompt_to=recorded))
     env["KG_DAILY_FILENAME"] = f"{today}.md"
@@ -706,7 +708,7 @@ def test_failed_later_pass_keeps_the_composed_timeline(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, _timeline("09:00–09:00 composed bullet")))
     env["KG_DAILY_FILENAME"] = f"{today}.md"
     env["KG_RECAP_INTERVAL_MINUTES"] = "0"
@@ -714,7 +716,7 @@ def test_failed_later_pass_keeps_the_composed_timeline(tmp_path):
     note = daily / f"{today}.md"
     before = note.read_text()
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "v2", "boom", exit_code=1))
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     assert note.read_text() == before
@@ -729,23 +731,23 @@ def test_mechanical_timeline_is_refreshed_by_a_later_mechanical_pass(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
     today = _dt.date.today().isoformat()
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     env = happy_env(vault, make_fake_claude(tmp_path, "boom", exit_code=1))
     env["KG_DAILY_FILENAME"] = f"{today}.md"
     env["KG_RECAP_INTERVAL_MINUTES"] = "0"
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
     note = daily / f"{today}.md"
-    assert "- 09:00  Edit a.md" in note.read_text()
+    assert "- 00:00  Edit a.md" in note.read_text()
 
-    _append_log(state, "testabcd", "09:10 tool=Edit target=b.md")
+    _append_log(state, "testabcd", "now tool=Edit target=b.md")
     run_hook({"session_id": "testabcd-uuid"}, env_extra=env, state_home=state)
-    assert "- 09:10  Edit b.md" in note.read_text()
+    assert re.search(r"- \d\d:\d\d  Edit b\.md", note.read_text())
 
 
 def test_headless_call_is_lean_and_cannot_recurse(tmp_path):
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     argv_file = tmp_path / "argv.txt"
     env_file = tmp_path / "env.txt"
     fake = tmp_path / "fake_claude.sh"
@@ -810,7 +812,7 @@ def test_commit_subject_uses_the_marker_key_form(tmp_path):
     vault, daily, repo = make_vault(tmp_path)
     state = tmp_path / "state"
     sid8 = "subjfrm1"
-    write_session_log(state, sid8, ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, sid8, ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     run_hook(
         {"session_id": sid8 + "-uuid"},
@@ -835,14 +837,13 @@ def test_two_stops_coalesce_into_one_block(tmp_path):
     state = tmp_path / "state"
     sid8 = "twostops"
     today = _dt.date.today()
-    write_session_log(state, sid8, ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, sid8, ["00:00 tool=Edit target=a.md"])
     fake1 = make_fake_claude(tmp_path / "f1", _canned_recap_with_discovery())
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake1), state_home=state)
 
-    sessions = state / "knowledge-gardener" / "sessions"
-    with (sessions / f"{today.isoformat()}-{sid8}.log").open("a") as fh:
-        fh.write("10:30 tool=Edit target=b.md\n")
-    (sessions / f".last-recap-{sid8}").unlink(missing_ok=True)
+    write_session_log(state, sid8, ["now tool=Edit target=b.md"])
+    (state / "knowledge-gardener" / "sessions" / f".last-recap-{sid8}").touch()
+    os.utime(state / "knowledge-gardener" / "sessions" / f".last-recap-{sid8}", (0, 0))  # interval long past
     fake2 = make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only())
     run_hook({"session_id": sid8 + "-uuid"}, env_extra=happy_env(vault, fake2), state_home=state)
 
@@ -854,7 +855,6 @@ def test_two_stops_coalesce_into_one_block(tmp_path):
     # the block carries the latest whole-session Timeline from the LLM output.
     assert "11:00–11:05 a/b.py を編集" in text
     assert "### KPT" not in text
-    assert (sessions / f"{sid8}.cursor").read_text().strip() == "10:30"
 
 
 def test_rerun_same_window_is_idempotent(tmp_path):
@@ -905,7 +905,7 @@ def test_miss_path_writes_discovery_cache(tmp_path):
     """On a cache miss the full prompt is used and the resulting discovery is cached."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     del env["KG_DAILY_FOLDER"]  # force the discovery path
@@ -926,7 +926,7 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
     """A pre-existing cache entry routes the hook through the compose-only prompt."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
 
     # Pre-seed the cache so pre_resolve_daily_path succeeds without an LLM call.
     readme_hash = _readme_hash_for(vault)
@@ -967,7 +967,7 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
     # substituted TODAY / TIMELINE / TRANSCRIPT_SLICE inputs (the reduced
     # placeholder set — no DAILY_TEMPLATE, PRIOR_KPT, or VAULT_README).
     assert "kg-recap-sid" not in prompt_text
-    assert "- 09:00  Edit a.md" in prompt_text
+    assert "- 00:00  Edit a.md" in prompt_text
     assert "{{" not in prompt_text, (
         "every {{...}} placeholder must be substituted; a leftover literal "
         "(e.g. {{PRIOR_KPT}}) would reach the model unsubstituted"
@@ -993,15 +993,15 @@ def test_cached_discovery_still_writes_the_references_section(tmp_path):
     env = happy_env(vault, make_fake_claude(tmp_path / "f1", discovery))
     del env["KG_DAILY_FOLDER"]  # discovery, then the cache, must supply everything
 
-    write_session_log(state, "coldpass", ["09:00 tool=Edit target=a.md",
-                                          "09:00 tool=ReadNote target=notes/first.md"])
+    write_session_log(state, "coldpass", ["00:00 tool=Edit target=a.md",
+                                          "00:00 tool=ReadNote target=notes/first.md"], vault)
     run_hook({"session_id": "coldpass-uuid"}, env_extra=env, state_home=state)
     note = daily / f"{today}.md"
     assert "- [first](../notes/first.md)" in note.read_text()
 
     env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only()))
     write_session_log(state, "warmpass", ["10:00 tool=Edit target=b.md",
-                                          "10:00 tool=ReadNote target=notes/second.md"])
+                                          "10:00 tool=ReadNote target=notes/second.md"], vault)
     run_hook({"session_id": "warmpass-uuid"}, env_extra=env, state_home=state)
     text = note.read_text()
     assert "- [second](../notes/second.md)" in text
@@ -1012,7 +1012,7 @@ def test_readme_change_invalidates_cache(tmp_path):
     """Editing the README produces a new hash; the old cache entry is bypassed."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
 
     # Cache keyed by a stale hash (the README's current hash gets a different file).
     stale_hash = "0" * 64
@@ -1045,7 +1045,7 @@ def test_corrupted_cache_falls_back_to_discovery(tmp_path):
     """A malformed cache JSON does not crash the hook; it falls back to the miss path."""
     vault, daily, _ = make_vault(tmp_path)
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
 
     cache_path = _cache_path_for(state, _readme_hash_for(vault))
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1110,7 +1110,7 @@ def test_new_daily_note_is_seeded_from_the_template(tmp_path):
     tmpl.parent.mkdir(parents=True)
     tmpl.write_text("---\ntitle: {{date}}\ndate: {{date}}\n---\n")
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
     today = _dt.date.today().isoformat()
 
     fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
@@ -1134,7 +1134,7 @@ def test_existing_daily_note_is_not_reseeded(tmp_path):
     today = _dt.date.today().isoformat()
     (daily / f"{today}.md").write_text("## 今日作成したノート\n\n- x\n")
     state = tmp_path / "state"
-    write_session_log(state, "testabcd", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "testabcd", ["00:00 tool=Edit target=a.md"])
 
     fake = make_fake_claude(tmp_path, _canned_recap_timeline_only())
     env = happy_env(vault, fake)
@@ -1163,7 +1163,7 @@ def test_commit_does_not_sweep_in_other_staged_files(tmp_path):
     other.write_text("staged by someone else\n")
     subprocess.run(["git", "add", "unrelated.md"], cwd=repo, check=True)
 
-    write_session_log(state, "scopetst", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "scopetst", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     run_hook(
         {"session_id": "scopetst-uuid"},
@@ -1220,7 +1220,7 @@ def test_push_retries_after_rebasing_on_remote_changes(tmp_path):
     subprocess.run(["git", "commit", "-q", "-m", "from other machine"], cwd=other, check=True)
     subprocess.run(["git", "push", "-q"], cwd=other, check=True)
 
-    write_session_log(state, "pushtest", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "pushtest", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     env["KG_AUTO_RECAP_NO_PUSH"] = "0"
@@ -1270,7 +1270,7 @@ def test_push_reapplies_block_when_both_machines_created_the_daily_note(tmp_path
     subprocess.run(["git", "commit", "-q", "-m", "other machine recap"], cwd=other, check=True)
     subprocess.run(["git", "push", "-q"], cwd=other, check=True)
 
-    write_session_log(state, "bothnew0", ["09:00 tool=Edit target=a.md"])
+    write_session_log(state, "bothnew0", ["00:00 tool=Edit target=a.md"])
     fake = make_fake_claude(tmp_path, _canned_recap_with_discovery())
     env = happy_env(vault, fake)
     env["KG_AUTO_RECAP_NO_PUSH"] = "0"

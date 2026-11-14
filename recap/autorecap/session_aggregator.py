@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as _dt
+import pathlib
 
-from ..aggregate.__main__ import aggregate_session
-from ..shared.paths import session_log_path
+from ..shared.timeline import durable_change, duration_minutes, render_timeline
+from ..shared.tool_calls import READ_NOTE_TOOL, read_tool_calls
 from .context import RecapContext
 
 
@@ -17,6 +18,33 @@ class Aggregation:
     duration_min: int
     timeline: list[str]
     referenced_notes: list[str]
+    entries: list[dict]
+
+    def entries_after(self, ts: float) -> list[dict]:
+        return [e for e in self.entries if e["ts"] > ts]
+
+    def timeline_after(self, ts: float) -> list[str]:
+        return render_timeline(self.entries_after(ts))
+
+
+def aggregate_transcript(transcript_path: str | pathlib.Path | None, date: _dt.date,
+                         vault: pathlib.Path | None) -> Aggregation | None:
+    """Whole-session view of `date` from the transcript; None when it holds no material tool call."""
+    entries = read_tool_calls(transcript_path, date, vault)
+    if not entries:
+        return None
+    start, end = entries[0]["hhmm"], entries[-1]["hhmm"]
+    referenced = dict.fromkeys(e["target"] for e in entries if e["tool"] == READ_NOTE_TOOL and e["target"])
+    return Aggregation(
+        start_hhmm=start,
+        end_hhmm=end,
+        durable_change=durable_change(entries),
+        entry_count=len(entries),
+        duration_min=duration_minutes(start, end),
+        timeline=render_timeline(entries),
+        referenced_notes=list(referenced),
+        entries=entries,
+    )
 
 
 class SessionAggregator:
@@ -24,21 +52,4 @@ class SessionAggregator:
         self._ctx = ctx
 
     def aggregate(self) -> Aggregation | None:
-        today = _dt.date.today()
-        log_path = session_log_path(self._ctx.sid8, today)
-        if not log_path.is_file():
-            return None
-        s = aggregate_session(log_path, today)  # whole session; the caller cuts the new slice
-        start = s.get("first_hhmm")
-        end = s.get("last_hhmm")
-        if not start or not end or not s.get("entry_count"):
-            return None  # empty / fully-filtered window -> no-op
-        return Aggregation(
-            start_hhmm=start,
-            end_hhmm=end,
-            durable_change=bool(s.get("durable_change")),
-            entry_count=int(s.get("entry_count") or 0),
-            duration_min=int(s.get("duration_min") or 0),
-            timeline=list(s.get("timeline") or []),
-            referenced_notes=list(s.get("referenced_notes") or []),
-        )
+        return aggregate_transcript(self._ctx.transcript_path, _dt.date.today(), self._ctx.vault)

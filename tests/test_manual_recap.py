@@ -3,25 +3,20 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import io
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from recap.manual_recap.__main__ import main
-
-
-def _sessions(state: Path) -> Path:
-    d = state / "knowledge-gardener" / "sessions"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+from recap.manual_recap.__main__ import find_transcript, main
+from recap.shared.pass_state import covered_until
+from tests.transcripts import write_transcript
 
 
 def _write_log(state: Path, sid: str, lines: list[str]) -> Path:
-    today = _dt.date.today().isoformat()
-    p = _sessions(state) / f"{today}-{sid}.log"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    """Write the session's transcript where find_transcript looks for it."""
+    return write_transcript(state / "claude" / "projects" / "proj" / f"{sid}-uuid.jsonl", lines)
 
 
 def _setup(tmp_path: Path, monkeypatch, *, git: bool = False) -> tuple[Path, Path, Path]:
@@ -32,6 +27,8 @@ def _setup(tmp_path: Path, monkeypatch, *, git: bool = False) -> tuple[Path, Pat
     state = tmp_path / "state"
     monkeypatch.setenv("KG_VAULT", str(vault))
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(state / "claude"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     if git:
         for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
             subprocess.run(["git", *cmd], cwd=vault, check=True)
@@ -50,7 +47,7 @@ def test_create_block_when_absent(tmp_path, monkeypatch):
     assert "<!-- kg-recap-sid:manual01 -->" in text
     assert "### Timeline" in text
     assert "- 09:00  Edit a.md" in text
-    assert (state / "knowledge-gardener" / "sessions" / "manual01.cursor").read_text().strip() == "09:05"
+    assert covered_until("manual01") is not None   # the next auto pass starts after this recap
 
 
 def test_updates_an_existing_pre_upgrade_block(tmp_path, monkeypatch):
@@ -86,7 +83,7 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert "kg-recap-sid:manual01" in out
     assert "### Timeline" in out
     assert not daily.exists()
-    assert not (state / "knowledge-gardener" / "sessions" / "manual01.cursor").exists()
+    assert covered_until("manual01") is None
 
 
 def test_empty_session_returns_nonzero(tmp_path, monkeypatch):
@@ -156,3 +153,33 @@ def test_kpt_file_argument_is_rejected(tmp_path, monkeypatch):
     vault, daily, state = _setup(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         main(["--sid", "manual01", "--daily-path", str(daily), "--kpt-file", "/nope"])
+
+
+def test_session_defaults_to_the_running_one(tmp_path, monkeypatch):
+    vault, daily, state = _setup(tmp_path, monkeypatch)
+    _write_log(state, "manual01", ["09:00 tool=Edit target=a.md"])
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "manual01-uuid")
+    assert main(["--daily-path", str(daily), "--no-commit"]) == 0
+    assert "<!-- kg-recap-sid:manual01 -->" in daily.read_text()
+
+
+def test_no_session_to_recap_is_a_usage_error(tmp_path, monkeypatch):
+    vault, daily, state = _setup(tmp_path, monkeypatch)
+    assert main(["--daily-path", str(daily), "--no-commit"]) == 2
+
+
+def test_explicit_transcript_path_wins(tmp_path, monkeypatch):
+    vault, daily, state = _setup(tmp_path, monkeypatch)
+    elsewhere = write_transcript(tmp_path / "elsewhere.jsonl", ["09:00 tool=Edit target=z.md"])
+    assert main(["--sid", "manual01", "--transcript", str(elsewhere),
+                 "--daily-path", str(daily), "--no-commit"]) == 0
+    assert "- 09:00  Edit z.md" in daily.read_text()
+
+
+def test_find_transcript_picks_the_newest_match(tmp_path, monkeypatch):
+    vault, daily, state = _setup(tmp_path, monkeypatch)
+    older = write_transcript(state / "claude" / "projects" / "a" / "manual01-uuid.jsonl", ["09:00 tool=Edit target=a.md"])
+    newer = write_transcript(state / "claude" / "projects" / "b" / "manual01-uuid.jsonl", ["09:00 tool=Edit target=b.md"])
+    os.utime(older, (1, 1))
+    assert find_transcript("manual01") == newer
+    assert find_transcript("nothere1") is None

@@ -22,8 +22,8 @@ import traceback
 from ..shared.hook_io import DEFAULT_TIMEOUT, emit_continue, log
 from ..shared.conventions import convention_files
 from ..shared.fs import plugin_root, read_text
-from ..shared.paths import last_recap_marker, recap_lock_path, session_log_path
-from ..shared.cursor import covered_at, write_cursor
+from ..shared.paths import recap_lock_path
+from ..shared.pass_state import covered_until, last_pass_started, mark_covered, mark_pass_started
 from .context import RecapContext
 from .session_aggregator import SessionAggregator
 from .daily_note_resolver import DailyNoteResolver
@@ -102,11 +102,6 @@ def _session_lock(sid8: str, *, wait: bool):
         yield True
 
 
-def _since_cursor(timeline: list[str], since: str) -> list[str]:
-    """Mechanical bullets (`- HH:MM  ...`) from the cursor minute on."""
-    return [b for b in timeline if b[2:7] >= since]
-
-
 class AutoRecap:
     def __init__(self, ctx: RecapContext, *, final: bool = False) -> None:
         self._ctx = ctx
@@ -119,20 +114,8 @@ class AutoRecap:
                 self._run_pass()
 
     def _throttled(self) -> bool:
-        try:
-            age = time.time() - last_recap_marker(self._ctx.sid8).stat().st_mtime
-        except OSError:
-            return False
-        return age < recap_interval_seconds(os.environ)
-
-    def _mark_pass(self, started: float) -> None:
-        marker = last_recap_marker(self._ctx.sid8)
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            marker.touch()
-            os.utime(marker, (started, started))
-        except OSError:
-            pass
+        last = last_pass_started(self._ctx.sid8)
+        return last is not None and time.time() - last < recap_interval_seconds(os.environ)
 
     def _run_pass(self) -> None:
         ctx = self._ctx
@@ -140,21 +123,13 @@ class AutoRecap:
         if not self._final and self._throttled():
             return
 
-        log_path = session_log_path(ctx.sid8)
-        try:
-            log_stat = log_path.stat()
-        except OSError:
-            return
-        if log_stat.st_size == 0:
-            return
-        covered = covered_at(ctx.sid8)
-        if covered is not None and log_stat.st_mtime <= covered:
-            return  # no activity since the last written pass
-
+        covered = covered_until(ctx.sid8)
         started = time.time()
         agg = SessionAggregator(ctx).aggregate()
         if agg is None:
             return
+        if covered is not None and not agg.entries_after(covered):
+            return  # no activity since the last written pass
 
         substantive = is_substantive(agg.durable_change, agg.entry_count, agg.duration_min, os.environ)
         if not substantive and not self._final:
@@ -173,20 +148,20 @@ class AutoRecap:
         else:
             target = None  # resolved from discovery after the LLM call
 
-        self._mark_pass(started)
+        mark_pass_started(ctx.sid8, started)
 
         previous: list[str] = []
         if target is not None and target.path.is_file():
             previous = existing_timeline_bullets(target.path.read_text(encoding="utf-8"), ctx.sid8)
         mechanical = {escape_inline_tags(b) for b in agg.timeline}
         previous_is_composed = any(b not in mechanical for b in previous)
-        since = ctx.since if previous else None
+        since = covered if previous else None
 
         timeline_bullets: list[str] | None = None
 
         if substantive:
             tslice = slice_transcript(ctx.transcript_path, since, ctx.today_str)
-            new_slice = _since_cursor(agg.timeline, since) if since else agg.timeline
+            new_slice = agg.timeline_after(since) if since is not None else agg.timeline
 
             if pre is not None:
                 tmpl_path = plugin_root() / "recap" / "autorecap" / "prompts" / "auto_recap_compose_prompt.md"
@@ -228,17 +203,17 @@ class AutoRecap:
             ctx.sid8, start_hhmm=agg.start_hhmm, end_hhmm=agg.end_hhmm,
             timeline_bullets=timeline_bullets, insert_before=target.insert_before,
         ):
-            write_cursor(ctx.sid8, agg.end_hhmm, covered_at=started)
+            mark_covered(ctx.sid8, started)
             return
 
         note.apply_references(target.references_section, agg.referenced_notes, vault=ctx.vault)
 
         if not note.has_repo:
-            log("vault not in a git repo - skipping commit; cursor updated")
-            write_cursor(ctx.sid8, agg.end_hhmm, covered_at=started)
+            log("vault not in a git repo - skipping commit")
+            mark_covered(ctx.sid8, started)
             return
         note.commit(ctx.sid8)
-        write_cursor(ctx.sid8, agg.end_hhmm, covered_at=started)
+        mark_covered(ctx.sid8, started)
         if substantive:
             resolver.persist_cache()
 
