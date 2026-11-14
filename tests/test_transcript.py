@@ -1,3 +1,4 @@
+import datetime as _dt
 import json
 import time
 import pytest
@@ -16,33 +17,28 @@ def _line(typ, ts, content):
     return json.dumps({"type": typ, "timestamp": ts, "message": {"role": typ, "content": content}})
 
 
+def _epoch(ts):
+    return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+
+
 def test_returns_empty_for_missing_path():
-    assert slice_transcript(None, "09:00", "2026-05-30") == ""
-    assert slice_transcript("/nonexistent.jsonl", "09:00", "2026-05-30") == ""
+    assert slice_transcript(None, 0.0, "2026-05-30") == ""
+    assert slice_transcript("/nonexistent.jsonl", 0.0, "2026-05-30") == ""
 
 
-def test_filters_by_since_local_hhmm(tmp_path):
+def test_keeps_only_turns_stamped_after_since(tmp_path):
     p = tmp_path / "t.jsonl"
     p.write_text("\n".join([
         _line("user", "2026-05-30T08:00:00.000Z", "before window"),
-        _line("user", "2026-05-30T10:00:00.000Z", "after window"),
+        _line("user", "2026-05-30T09:00:00.000Z", "at the cut"),
+        _line("user", "2026-05-30T09:00:00.500Z", "after window"),
         _line("assistant", "2026-05-30T10:01:00.000Z", [{"type": "text", "text": "reply"}]),
     ]) + "\n")
-    out = slice_transcript(str(p), "09:00", "2026-05-30")
+    out = slice_transcript(str(p), _epoch("2026-05-30T09:00:00.000Z"), "2026-05-30")
     assert "before window" not in out
+    assert "at the cut" not in out
     assert "after window" in out
     assert "reply" in out
-
-
-def test_since_minute_itself_is_included(tmp_path):
-    p = tmp_path / "t.jsonl"
-    p.write_text("\n".join([
-        _line("user", "2026-05-30T08:59:59.000Z", "minute before"),
-        _line("user", "2026-05-30T09:00:30.000Z", "cursor minute"),
-    ]) + "\n")
-    out = slice_transcript(str(p), "09:00", "2026-05-30")
-    assert "minute before" not in out
-    assert "cursor minute" in out
 
 
 def test_drops_thinking_and_tooluse_blocks(tmp_path):

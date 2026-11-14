@@ -28,8 +28,7 @@ Emit **exactly** a `### Timeline` section, and nothing else — no markers, no s
    over with its WHAT and WHY intact. Then cover the new slice: extend the last
    bullet when the same activity continued, otherwise add bullets after it.
    Merge neighbouring bullets only to stay within the bullet budget, and never
-   drop what an earlier bullet recorded. The new slice may repeat the last
-   minute the previous Timeline already covers; do not record it twice.
+   drop what an earlier bullet recorded.
 7. If the previous Timeline is still a raw mechanical log (lines like
    `- HH:MM  Bash: ...`), rewrite it into activity units as in rule 1.
 

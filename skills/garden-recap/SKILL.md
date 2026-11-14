@@ -7,7 +7,7 @@ description: Use when the user wants to wrap up the current Claude Code session 
 
 Capture the current session's work — what happened (Timeline) — into today's daily note. Designed to be invoked **before** the user ends a session so future sessions (today or later) can recover context without re-reading the entire transcript.
 
-The normal path **drives the `recap.manual_recap` CLI** instead of hand-editing the daily note. The CLI upserts a per-session `kg-recap-sid:{sid8}` block — a `### Timeline` the CLI replaces wholesale on each run — the SAME block the auto-recap `Stop` hook maintains. Manual and auto recaps therefore converge on one block per session.
+The normal path **drives the `recap.manual_recap` CLI** instead of hand-editing the daily note. The CLI reads this session's transcript and upserts a per-session `kg-recap-sid:{sid8}` block — a `### Timeline` the CLI replaces wholesale on each run — the SAME block the auto-recap hooks maintain. Manual and auto recaps therefore converge on one block per session.
 
 ## When to Use
 
@@ -24,7 +24,7 @@ The normal path **drives the `recap.manual_recap` CLI** instead of hand-editing 
 
 ## Process
 
-The normal flow is three steps: identify the session, preview, apply. The CLI does the aggregation, block upsert, commit, and cursor advance — this skill does NOT hand-edit the daily note in the normal path. (A no-log recollection fallback is preserved under Step 2 for legacy sessions with no capture log.)
+The normal flow is three steps: resolve the daily note, preview, apply. The CLI finds the session's transcript, builds the Timeline from its tool calls, upserts the block and commits — this skill does NOT hand-edit the daily note in the normal path. (A recollection fallback is preserved under Step 2 for the case where the CLI finds nothing to read.)
 
 ### Step 1: Pre-flight Setup
 
@@ -40,24 +40,27 @@ From the conventions + template, extract for this skill (at minimum):
 
 If any of these are not discoverable from the README or templates, stop and ask the user. Do not invent defaults.
 
-Format today's date per the filename convention and build the absolute daily-note path under the daily-note folder. Hold onto this path — Step 3 / Step 4 pass it to the CLI as `--daily-path`. The CLI only **appends** the `kg-recap-sid` recap block; it does **not** seed the daily-note template. So if today's note does not exist yet, create it from the template first (Write tool) so it carries the vault's frontmatter/sections, then run the CLI.
+Format today's date per the filename convention and build the absolute daily-note path under the daily-note folder. Hold onto this path — Step 2 / Step 3 pass it to the CLI as `--daily-path`. The CLI only **appends** the `kg-recap-sid` recap block; it does **not** seed the daily-note template. So if today's note does not exist yet, create it from the template first (Write tool) so it carries the vault's frontmatter/sections, then run the CLI.
 
-### Step 2: Identify the Session & Gather the Timeline
+### Step 2: Preview (Propose, Don't Commit)
 
-Identify the active session and confirm a capture log exists:
+With the daily-note path from Step 1, preview the upsert:
 
 ```bash
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m recap.aggregate --json
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m recap.manual_recap \
+  --daily-path <abs daily path> --dry-run
 ```
 
-By default this picks the most-recently-modified session log for today (≈ the active session). Parse `sessions[0].sid8` — this is the `<sid8>` you pass to the CLI in Steps 3–4. The Timeline the CLI will write is aggregated by the CLI itself from this same log; you do not assemble it by hand. (If you want a hand-authored, richer Timeline instead of the deterministic one, write it to a temp file and pass `--timeline-file` in Steps 3–4 — rarely needed.)
+The CLI recaps the session it runs in: it takes the session id from `$CLAUDE_CODE_SESSION_ID`, finds that session's transcript under the Claude Code projects directory, and builds the Timeline from the tool calls recorded there (subagent calls included). You do not assemble it by hand. (To recap another session pass `--sid <session id or its first 8 characters>`; if the transcript lives somewhere unusual pass `--transcript <path>`. If you want a hand-authored, richer Timeline instead of the deterministic one, write it to a temp file and pass `--timeline-file` here and in Step 3 — rarely needed.)
 
-- If `sessions` is **non-empty** and `sessions[0].entry_count` is **> 0** → a capture log exists. Continue to **Step 3**.
-- If `sessions` is **empty** OR `sessions[0].entry_count` is **0** → there is no capture log (older plugin install, or the session predates capture). The Timeline path cannot run; fall back to the **No-log fallback** below, then **STOP** (do not run `recap.manual_recap`).
+`--dry-run` prints a unified diff of the daily note and writes nothing.
 
-#### No-log fallback (recollection)
+- Exit code **0** → show that diff to the user with the one-line rationale: "Capturing today's session into the per-session recap block so the next session can pick up context." Continue to **Step 3** on approval. Trigger phrases that count as implicit approval: "wrap up and write it" / "ここまでまとめて書いて".
+- Exit code **3** (no transcript found, or no material tool calls today) or **2** with `CLAUDE_CODE_SESSION_ID unset` → the Timeline path cannot run; fall back to the **No-transcript fallback** below, then **STOP** (do not run `recap.manual_recap` again).
 
-Only for the no-capture-log case. This is the older free-form, template-driven recap: you hand-edit today's daily note from recollection + `git log`, exactly as before the Timeline CLI existed.
+#### No-transcript fallback (recollection)
+
+Only for the case where the CLI found nothing to read. This is the older free-form, template-driven recap: you hand-edit today's daily note from recollection + `git log`, exactly as before the Timeline CLI existed.
 
 1. **Inventory from recollection + git** (don't make things up — only record what you can support from the conversation, file state, or `git log`):
    - **Time range**: session start (conversation start / the user's first substantive message) → `date` for "now".
@@ -74,33 +77,18 @@ Only for the no-capture-log case. This is the older free-form, template-driven r
 5. **Apply.** New note → **Write tool**; append → **Edit tool** (Read the file first; anchor on a stable template header rather than a long block markdownlint may have rewritten).
 6. **Lint, commit, push.** Follow [Common: Lint, Commit, Push](../using-knowledge-gardener/SKILL.md#common-lint-commit-push). Subject: new note → `plant: <date> daily (session recap)`; append → `water: <date> daily session recap`. `<date>` matches the daily-note filename format. Don't `--no-verify`.
 
-**Then STOP** — the no-log case is done here.
+**Then STOP** — the fallback case is done here.
 
-### Step 3: Preview (Propose, Don't Commit)
-
-With the daily-note path from Step 1 and `<sid8>` from Step 2, preview the upsert:
-
-```bash
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m recap.manual_recap \
-  --sid <sid8> --daily-path <abs daily path> --dry-run
-```
-
-`--dry-run` prints a unified diff of the daily note and writes nothing. Show that diff to the user with the one-line rationale: "Capturing today's session into the per-session recap block so the next session can pick up context."
-
-Trigger phrases that count as implicit approval: "wrap up and write it" / "ここまでまとめて書いて".
-
-(Exit code 3 = nothing to recap — no session log. That shouldn't happen here because Step 2 already confirmed `entry_count > 0`; if it does, drop to the No-log fallback.)
-
-### Step 4: Apply on Approval
+### Step 3: Apply on Approval
 
 Re-run the SAME command **without** `--dry-run`:
 
 ```bash
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m recap.manual_recap \
-  --sid <sid8> --daily-path <abs daily path>
+  --daily-path <abs daily path>
 ```
 
-The CLI writes the Timeline block (replacing the Timeline section wholesale each run — the caller owns the full bullet list), commits (`water: <date> daily auto-recap (<sid8>)`), and advances the per-session cursor. (`--timeline-file` is optional; omitting it falls back to the deterministic filtered timeline aggregated from the capture log, as described in Step 2.)
+The CLI writes the Timeline block (replacing the Timeline section wholesale each run — the caller owns the full bullet list), commits (`water: <date> daily auto-recap (<sid8>)`), and records that the session is recapped up to now, so the next auto pass only adds what comes after. (`--timeline-file` is optional; omitting it falls back to the deterministic filtered timeline built from the transcript, as described in Step 2.)
 
 Don't `--no-verify` and don't hand-edit the block afterward. If you need a different insertion point for a brand-new block, pass `--insert-before <heading>` (default appends at EOF); to write without committing, pass `--no-commit`.
 
@@ -108,14 +96,14 @@ Don't `--no-verify` and don't hand-edit the block afterward. If you need a diffe
 
 - **No daily-note convention documented**: the vault README doesn't tell you where daily notes go or how they're named → stop and ask the user; do not invent a location.
 - **Daily folder doesn't exist** (vault layout differs from expectation): stop and surface the gap. Suggest the user pick the correct folder or update the README.
-- **No capture log** (`sessions` empty or `entry_count` 0): take the **No-log fallback (recollection)** under Step 2, then stop. Don't try to force the CLI.
-- **Block already exists for this session** (earlier manual recap, or an auto `Stop` already ran): re-running is safe — the CLI replaces the Timeline wholesale with the freshly aggregated (or `--timeline-file`-authored) bullet list each time. Review the `--dry-run` diff before applying; if you authored a Timeline via `--timeline-file` earlier, re-pass it or that content is lost on the next run.
+- **Nothing to read** (the dry run exits 3, or 2 because the session id is unknown): take the **No-transcript fallback (recollection)** under Step 2, then stop. Don't try to force the CLI.
+- **Block already exists for this session** (earlier manual recap, or an auto pass already ran): re-running is safe — the CLI replaces the Timeline wholesale with the freshly aggregated (or `--timeline-file`-authored) bullet list each time. Review the `--dry-run` diff before applying; if you authored a Timeline via `--timeline-file` earlier, re-pass it or that content is lost on the next run.
 - **Session inventory turns up nothing meaningful**: tell the user "nothing significant to recap" rather than padding the daily note with filler. Better to skip than to write noise.
-- **Pre-commit fails inside the CLI commit** (e.g. broken link in the Timeline): fix the link via `--timeline-file` and re-run Step 4. Don't `--no-verify`.
+- **Pre-commit fails inside the CLI commit** (e.g. broken link in the Timeline): fix the link via `--timeline-file` and re-run Step 3. Don't `--no-verify`.
 
 ## Key Principles
 
-- **Evidence over recollection.** "What happened" comes from the Timeline / `git log` / actual conversation, not paraphrased memory. The CLI's Timeline is aggregated from the capture log, so the factual layer is mechanically grounded.
+- **Evidence over recollection.** "What happened" comes from the Timeline / `git log` / actual conversation, not paraphrased memory. The CLI's Timeline is built from the tool calls in the transcript, so the factual layer is mechanically grounded.
 - **The CLI owns the whole Timeline, not just new bullets.** `upsert_session_block` replaces the `### Timeline` section wholesale on every run — the caller supplies the complete bullet list, not a delta. If you author a rich Timeline via `--timeline-file`, re-pass that file on every later run for the same session; omitting it lets the deterministic aggregation overwrite your authored content.
 - **One block per session.** Manual and auto recaps target the same `kg-recap-sid:{sid8}` block, so a session never ends up with two competing recaps.
 - **One commit per recap.** The CLI makes exactly one `water:` commit. The daily note may collect multiple sessions, but each recap is its own commit so history stays readable.

@@ -1,22 +1,10 @@
 """Shared path helpers for knowledge-gardener machine-local state.
 
-Used by:
-- recap/capture/ (PostToolUse hook — writes session log entries)
-- recap/aggregate/ (reads session logs)
-- recap/autorecap/ (reads session log, writes throttle marker)
-
-All three previously duplicated the XDG_STATE_HOME resolution and the
-"<state>/knowledge-gardener/sessions/" path construction. Centralized here
-so future changes (e.g. moving sessions/ to data/ per XDG, or adding
-encryption) happen in one place.
-
-Plain stdlib only (no third-party deps), since the capture hook runs inside a
-synchronous PostToolUse hook and the auto-recap hook runs inside a Stop hook
-— neither can afford an import-time pip dependency.
+Plain stdlib only (no third-party deps): everything here runs inside hooks,
+which cannot afford an import-time pip dependency.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import os
 import pathlib
 
@@ -33,19 +21,12 @@ def kg_state_dir() -> pathlib.Path:
 
 
 def sessions_dir() -> pathlib.Path:
-    """Where per-session capture logs live."""
+    """Where per-session pass state (throttle marker, lock) lives."""
     return kg_state_dir() / "sessions"
 
 
-def session_log_path(sid8: str, date: _dt.date | None = None) -> pathlib.Path:
-    """Path to one session's capture log: `<sessions>/<YYYY-MM-DD>-<sid8>.log`."""
-    d = (date or _dt.date.today()).isoformat()
-    safe_sid = (sid8 or "unknown")[:8] or "unknown"
-    return sessions_dir() / f"{d}-{safe_sid}.log"
-
-
 def last_recap_marker(sid8: str) -> pathlib.Path:
-    """Path to the per-session throttle marker; its mtime is when the last pass started."""
+    """Path to the per-session pass marker (see shared/pass_state.py)."""
     safe_sid = (sid8 or "unknown")[:8] or "unknown"
     return sessions_dir() / f".last-recap-{safe_sid}"
 
@@ -54,18 +35,6 @@ def recap_lock_path(sid8: str) -> pathlib.Path:
     """Path to the per-session lock that keeps two passes from overlapping."""
     safe_sid = (sid8 or "unknown")[:8] or "unknown"
     return sessions_dir() / f".recap-{safe_sid}.lock"
-
-
-def cursor_path(sid8: str) -> pathlib.Path:
-    """Path to the per-session recap cursor file.
-
-    Holds a single HH:MM line — the last log entry included in the most
-    recent successfully-written block; scopes the next pass's new slice. Its
-    mtime is when that pass read the log, so a log newer than it has activity
-    no block covers yet.
-    """
-    safe_sid = (sid8 or "unknown")[:8] or "unknown"
-    return sessions_dir() / f"{safe_sid}.cursor"
 
 
 def discovery_cache_dir() -> pathlib.Path:

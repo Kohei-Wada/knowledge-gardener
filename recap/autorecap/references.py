@@ -5,7 +5,7 @@ existed. The created-notes section only covers notes born today, so a
 procedure written three months ago and re-used today leaves no trace in the
 journal. This section is that trace.
 
-Mechanical by construction: the entries come from captured Read calls, never
+Mechanical by construction: the entries come from Read calls in the transcript, never
 from a judgement about what mattered. Anything whose link is already somewhere
 in the note is skipped, which both de-duplicates across sessions and drops
 notes today's created-notes section already lists.

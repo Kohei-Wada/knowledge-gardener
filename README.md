@@ -77,17 +77,11 @@ If no README is found in either location, `garden-plant` will refuse to write an
 | `garden-prune` | **(implemented)** Remove a named note — archive by default (git mv into the vault's archive folder), hard-delete only on explicit request. Surfaces inbound-link warnings; cleanup goes through garden-water |
 | `garden-harvest` | **(implemented)** Turn mature vault knowledge into a published blog post — gather permanent notes, shape in dialogue (no stored draft), mask PII, emit into the blog repo (`KG_BLOG_REPO`) per that repo's conventions; commits, never pushes |
 
-### Session Capture (Phase 1)
+### Session Activity (read from the transcript)
 
-Starting in `v0.8.0`, knowledge-gardener ships a `PostToolUse` hook that records a one-line evidence entry per material tool call to:
+The recap skills need a factual record of what a session did. Claude Code's own transcript already holds every tool call, so nothing is captured while the session runs: `recap/shared/tool_calls.py` reads the transcript when a recap is written, including the calls of subagents (`<transcript>/subagents/*.jsonl`). (`v0.8.0` to `v0.26.0` kept a separate log written by a `PostToolUse` hook; it is gone, and leftover `sessions/*.log` and `*.cursor` files can be deleted.)
 
-```
-$XDG_STATE_HOME/knowledge-gardener/sessions/<YYYY-MM-DD>-<sid8>.log
-```
-
-Default location: `~/.local/state/knowledge-gardener/sessions/`. Modes `0700` (dir) / `0600` (file).
-
-What gets recorded:
+What counts as activity:
 
 - File-mutating tools (`Edit`, `Write`, `NotebookEdit`)
 - Non-trivial `Bash` (after stripping `cd <dir> &&` prefixes; trivial commands like `ls`, `pwd`, `cat`, `grep`, `rg`, `wc`, `sort`, `date`, etc. are filtered)
@@ -97,13 +91,14 @@ What gets recorded:
 
 What is skipped:
 
-- Read-only tools (`Read`, `ToolSearch`, `AskUserQuestion`, …)
+- Read-only tools (`Read`, `ToolSearch`, `AskUserQuestion`, …), except a `Read` of a note inside the vault, which is kept as a consulted note
 - Internal task plumbing (`TodoWrite`, `TaskCreate`, `TaskUpdate`, …)
 - Trivial shell commands
+- Calls that failed or were denied
 
-Privacy at the edge: `<private>...</private>` blocks and `<key>=<value>` shapes for `api_key` / `secret` / `token` / `password` / `auth` are replaced with `[REDACTED]` before any byte hits disk.
+Privacy at the edge: `<private>...</private>` blocks and `<key>=<value>` shapes for `api_key` / `secret` / `token` / `password` / `auth` are replaced with `[REDACTED]` before a call's target reaches a Timeline or a prompt.
 
-Since `v0.9.0`, `garden-recap` reads these logs via `recap/aggregate/` and uses them as the inventory source instead of relying solely on Claude's recollection. Falls back to recollection when no logs exist.
+`garden-recap` builds its Timeline from the same record via `recap.manual_recap`, and falls back to recollection when the transcript cannot be found.
 
 ### Auto-Recap (Phase 3, opt-in)
 
@@ -129,15 +124,15 @@ export KG_AUTO_RECAP_MODEL=sonnet
 export KG_RECAP_HOST=laptop
 ```
 
-When set, `recap/autorecap/` maintains **one coalesced block per session** (keyed by `kg-recap-sid:{sid8}`) in today's daily note, containing a single `### Timeline` composed by headless `claude -p` from the session log and transcript.
+When set, `recap/autorecap/` maintains **one coalesced block per session** (keyed by `kg-recap-sid:{sid8}`) in today's daily note, containing a single `### Timeline` composed by headless `claude -p` from the session's transcript.
 
 A session is recapped in **passes**, and a pass is the only thing that composes, writes, commits and pushes:
 
 - The first substantive Stop of a session runs a pass at once, so the block appears early.
-- After that a Stop runs a pass at most once per `KG_RECAP_INTERVAL_MINUTES`, and only when the session has activity no block covers yet. Every other Stop leaves the vault alone.
+- After that a Stop runs a pass at most once per `KG_RECAP_INTERVAL_MINUTES`, and only when the transcript has tool calls no block covers yet. Every other Stop leaves the vault alone.
 - When the session ends (`/exit`, Ctrl-D, `/clear`, a closed terminal pane, `kill`), the `SessionEnd` hook runs one last pass for the uncovered activity, ignoring the interval. The hook itself returns at once and hands the pass to a detached process, because Claude Code gives a SessionEnd hook only about a second. `kill -9` and a crash fire no hook; what they leave uncovered is picked up only if the session is resumed the same day.
 
-Each pass gives the model the Timeline already in the note plus the mechanical log and transcript since then, and asks it to keep the earlier bullets and extend them, so a bullet's "why" survives later passes. A pass whose compose call fails keeps the Timeline the note already has.
+Each pass gives the model the Timeline already in the note plus the tool calls and conversation since then, and asks it to keep the earlier bullets and extend them, so a bullet's "why" survives later passes. A pass whose compose call fails keeps the Timeline the note already has.
 
 The compose call runs `claude -p --safe-mode --tools "" --no-session-persistence --system-prompt … --model $KG_AUTO_RECAP_MODEL`: no plugins, hooks, MCP servers, CLAUDE.md, tools or saved transcript, which is all a one-prompt call needs. It requires a Claude Code that has `--safe-mode`.
 
@@ -149,15 +144,15 @@ A session is substantive once it produced a durable change (Edit/Write, git comm
 
 A pass writes / updates the block in the daily note and `git commit && git push`; when the note already matches `HEAD` there is nothing to commit and it stops there. The `kg-discovery` block (naming the daily folder, today's filename, and optional insertion anchor) is derived from the vault README and cached per README revision.
 
-**Notes consulted today.** A session that reads a note in the vault consulted knowledge that already existed — a procedure written three months ago, say. The created-notes convention only covers notes born today, so re-use leaves no trace in the journal. When the vault README declares a `references_section` heading, each pass appends one bullet per note read during the session, and two days that touched the same note become connected through that note instead of through a link between the days. Entries are mechanical (captured `Read` calls whose path is under `$KG_VAULT`, never a judgement about what mattered), append-only, and skipped when the link is already somewhere in the note — which both de-duplicates across sessions and drops whatever the created-notes section already lists. Reads outside the vault stay skipped as navigation noise, and with no heading declared nothing is written.
+**Notes consulted today.** A session that reads a note in the vault consulted knowledge that already existed — a procedure written three months ago, say. The created-notes convention only covers notes born today, so re-use leaves no trace in the journal. When the vault README declares a `references_section` heading, each pass appends one bullet per note read during the session, and two days that touched the same note become connected through that note instead of through a link between the days. Entries are mechanical (`Read` calls in the transcript whose path is under `$KG_VAULT`, never a judgement about what mattered), append-only, and skipped when the link is already somewhere in the note — which both de-duplicates across sessions and drops whatever the created-notes section already lists. Reads outside the vault stay skipped as navigation noise, and with no heading declared nothing is written.
 
 This is the **format-agnostic** path: the script never assumes folder names like `04_DailyNotes` — Claude reads the vault README at every Stop event and adapts. The env-var overrides exist for users who want to skip discovery or whose README doesn't document a daily-note convention. If both discovery and env are absent, auto-recap silently degrades to a no-op (it never guesses a folder).
 
-The Stop hook is registered with `async: true` so it runs fire-and-forget — Claude returns control to you immediately while the recap composes in the background (typically 10-60s). Failure modes (no claude binary, network error, malformed Claude output, etc.) all silently degrade. Diagnostics land in `$XDG_STATE_HOME/knowledge-gardener/auto-recap.log` (fallback `~/.local/state/`), next to the session logs.
+The Stop hook is registered with `async: true` so it runs fire-and-forget — Claude returns control to you immediately while the recap composes in the background (typically 10-60s). Failure modes (no claude binary, network error, malformed Claude output, etc.) all silently degrade. Diagnostics land in `$XDG_STATE_HOME/knowledge-gardener/auto-recap.log` (fallback `~/.local/state/`).
 
 Default-off so OSS installs don't surprise users with auto-commits to their vault. Single-user private vault: turn it on. Shared / public vault: leave it off and use `garden-recap` manually.
 
-Spec: [`docs/specs/2026-05-18-session-capture-design.md`](docs/specs/2026-05-18-session-capture-design.md) (writer / Phase 1), [`docs/specs/2026-05-20-recap-aggregator-design.md`](docs/specs/2026-05-20-recap-aggregator-design.md) (consumer / Phase 2), [`docs/specs/2026-05-20-auto-recap-design.md`](docs/specs/2026-05-20-auto-recap-design.md) (auto-write / Phase 3).
+Spec: [`docs/specs/2026-05-20-auto-recap-design.md`](docs/specs/2026-05-20-auto-recap-design.md) (auto-write), [`docs/specs/2026-11-14-recap-throttle-design.md`](docs/specs/2026-11-14-recap-throttle-design.md) (pass schedule), [`docs/specs/2026-11-14-recap-from-transcript-design.md`](docs/specs/2026-11-14-recap-from-transcript-design.md) (transcript as the activity record; supersedes the capture log of [`2026-05-18-session-capture-design.md`](docs/specs/2026-05-18-session-capture-design.md) and the aggregator CLI of [`2026-05-20-recap-aggregator-design.md`](docs/specs/2026-05-20-recap-aggregator-design.md)).
 
 ### What Counts as "Durable"
 

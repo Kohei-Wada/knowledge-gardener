@@ -4,7 +4,6 @@ import dataclasses
 import datetime as _dt
 import json
 import pathlib
-from ..shared.cursor import read_cursor
 from ..shared.hook_io import log
 
 
@@ -13,7 +12,6 @@ class RecapContext:
     sid8: str
     vault: pathlib.Path
     today_str: str
-    since: str | None
     transcript_path: str | None
 
     @classmethod
@@ -37,11 +35,9 @@ class RecapContext:
             return None
         sid8 = (payload.get("session_id") or "")[:8] or "unknown"
         transcript_path = payload.get("transcript_path") or None
-        since = read_cursor(sid8)
         return cls(
             sid8=sid8,
             vault=vault,
             today_str=_dt.date.today().isoformat(),
-            since=since,
             transcript_path=transcript_path,
         )
