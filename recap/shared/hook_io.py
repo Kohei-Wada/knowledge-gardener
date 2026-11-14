@@ -10,8 +10,13 @@ import datetime as _dt
 import pathlib
 import sys
 
+from .paths import kg_state_dir
+
 DEFAULT_TIMEOUT = 180
-LOG_FILE = pathlib.Path.home() / ".local" / "state" / "knowledge-gardener" / "auto-recap.log"
+
+
+def log_path() -> pathlib.Path:
+    return kg_state_dir() / "auto-recap.log"
 
 
 def emit_continue() -> None:
@@ -21,8 +26,9 @@ def emit_continue() -> None:
 
 def log(line: str) -> None:
     try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with LOG_FILE.open("a", encoding="utf-8") as f:
+        path = log_path()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a", encoding="utf-8") as f:
             ts = _dt.datetime.now().isoformat(timespec="seconds")
             f.write(f"{ts} {line}\n")
     except OSError:

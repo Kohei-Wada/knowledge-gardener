@@ -153,7 +153,7 @@ A pass writes / updates the block in the daily note and `git commit && git push`
 
 This is the **format-agnostic** path: the script never assumes folder names like `04_DailyNotes` — Claude reads the vault README at every Stop event and adapts. The env-var overrides exist for users who want to skip discovery or whose README doesn't document a daily-note convention. If both discovery and env are absent, auto-recap silently degrades to a no-op (it never guesses a folder).
 
-The Stop hook is registered with `async: true` so it runs fire-and-forget — Claude returns control to you immediately while the recap composes in the background (typically 10-60s). Failure modes (no claude binary, network error, malformed Claude output, etc.) all silently degrade. Diagnostics land in `~/.local/state/knowledge-gardener/auto-recap.log`.
+The Stop hook is registered with `async: true` so it runs fire-and-forget — Claude returns control to you immediately while the recap composes in the background (typically 10-60s). Failure modes (no claude binary, network error, malformed Claude output, etc.) all silently degrade. Diagnostics land in `$XDG_STATE_HOME/knowledge-gardener/auto-recap.log` (fallback `~/.local/state/`), next to the session logs.
 
 Default-off so OSS installs don't surprise users with auto-commits to their vault. Single-user private vault: turn it on. Shared / public vault: leave it off and use `garden-recap` manually.
 

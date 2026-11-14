@@ -78,11 +78,6 @@ User-set environment variables (`KG_DAILY_FOLDER`, `KG_DAILY_TEMPLATE`) override
 {{VAULT_README}}
 ```
 
-### Today's existing daily note (for cross-reference; you append, you do not overwrite)
-```
-{{EXISTING_DAILY}}
-```
-
 ### Timeline (mechanical, whole session — factual basis for the activity-log Timeline)
 ```
 {{TIMELINE}}

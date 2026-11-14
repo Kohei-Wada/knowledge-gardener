@@ -40,8 +40,9 @@ class DailyTarget(typing.NamedTuple):
 # the schema whenever the set of keys changes; that forces exactly one fresh
 # discovery per machine.
 #   2 -> 3: references_section (v0.25.0)
+#   3 -> 4: references_section is actually stored (3 parsed it but never cached it)
 
-_CACHE_SCHEMA_VERSION = 3
+_CACHE_SCHEMA_VERSION = 4
 _FILENAME_DATE_PLACEHOLDER = "{date}"
 
 
@@ -98,6 +99,7 @@ def read_discovery_cache(readme_hash: str) -> dict[str, str] | None:
         "filename_pattern": pattern,
         "insert_before": (data.get("insert_before") or "").strip(),
         "template": (data.get("template") or "").strip(),
+        "references_section": (data.get("references_section") or "").strip(),
     }
 
 
@@ -114,6 +116,7 @@ def write_discovery_cache(readme_hash: str, discovery: dict[str, str]) -> None:
         "filename_pattern": pattern,
         "insert_before": (discovery.get("insert_before") or "").strip(),
         "template": (discovery.get("template") or "").strip(),
+        "references_section": (discovery.get("references_section") or "").strip(),
         "discovered_at": _dt.datetime.now().isoformat(timespec="seconds"),
     }
     path = discovery_cache_path(readme_hash)
