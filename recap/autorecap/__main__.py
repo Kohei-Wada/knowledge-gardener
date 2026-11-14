@@ -185,7 +185,6 @@ class AutoRecap:
         timeline_bullets: list[str] | None = None
 
         if substantive:
-            readme = load_vault_context(ctx.vault)
             tslice = slice_transcript(ctx.transcript_path, since, ctx.today_str)
             new_slice = _since_cursor(agg.timeline, since) if since else agg.timeline
 
@@ -198,8 +197,7 @@ class AutoRecap:
                 return
             prompt = compose_prompt(tmpl_path.read_text(encoding="utf-8"), {
                 "TODAY": ctx.today_str,
-                "VAULT_README": readme,
-                "EXISTING_DAILY": (target.path.read_text(encoding="utf-8") if target and target.path.is_file() else "(file does not exist yet)"),
+                "VAULT_README": load_vault_context(ctx.vault) if pre is None else "",
                 "PREVIOUS_TIMELINE": "\n".join(previous) or "(none: this is the first pass for the session)",
                 "TIMELINE": "\n".join(new_slice) or "(no new tool activity)",
                 "TRANSCRIPT_SLICE": tslice or "(transcript unavailable)",

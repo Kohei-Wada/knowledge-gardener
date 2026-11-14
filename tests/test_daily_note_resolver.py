@@ -12,7 +12,6 @@ if str(REPO_ROOT) not in sys.path:
 from recap.autorecap import context as recap_context  # noqa: E402
 from recap.autorecap import daily_note  # noqa: E402
 from recap.autorecap import daily_note_resolver  # noqa: E402
-from recap.autorecap import session_aggregator  # noqa: E402
 
 
 def test_recap_context_from_hook_returns_none_when_env_unset(monkeypatch):
@@ -30,38 +29,6 @@ def test_recap_context_from_hook_builds_facts(monkeypatch, tmp_path):
     assert ctx.sid8 == "abcd1234"
     assert ctx.vault == vault
     assert len(ctx.today_str) == 10  # YYYY-MM-DD
-
-
-def test_session_aggregator_returns_none_when_no_sessions(monkeypatch, tmp_path):
-    monkeypatch.setattr(session_aggregator, "_run_aggregator_json", lambda sid8, since=None: None)
-    ctx = recap_context.RecapContext(
-        sid8="abcd1234", vault=tmp_path, today_str="2026-05-29", since=None, transcript_path=None
-    )
-    agg = session_aggregator.SessionAggregator(ctx).aggregate()
-    assert agg is None
-
-
-def test_session_aggregator_parses_window(monkeypatch, tmp_path):
-    fake_session = {
-        "first_hhmm": "09:00",
-        "last_hhmm": "09:30",
-        "entry_count": 5,
-        "duration_min": 30,
-        "durable_change": True,
-        "timeline": ["- 09:00  Edit a.md", "- 09:30  Bash: git commit"],
-    }
-    monkeypatch.setattr(session_aggregator, "_run_aggregator_json", lambda sid8, since=None: fake_session)
-    ctx = recap_context.RecapContext(
-        sid8="abcd1234", vault=tmp_path, today_str="2026-05-29", since=None, transcript_path=None
-    )
-    agg = session_aggregator.SessionAggregator(ctx).aggregate()
-    assert agg is not None
-    assert agg.start_hhmm == "09:00"
-    assert agg.end_hhmm == "09:30"
-    assert agg.entry_count == 5
-    assert agg.duration_min == 30
-    assert agg.durable_change is True
-    assert agg.timeline == ["- 09:00  Edit a.md", "- 09:30  Bash: git commit"]
 
 
 def _ctx_with_vault(tmp_path):
@@ -377,3 +344,12 @@ def test_discovery_cache_roundtrips_template(tmp_path, monkeypatch):
     got = daily_note_resolver.read_discovery_cache("deadbeef")
     assert got is not None
     assert got["template"] == "99_Templates/daily_note_template.md"
+
+
+def test_discovery_cache_roundtrips_references_section(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    daily_note_resolver.write_discovery_cache("h" * 64, {
+        "folder": "daily", "filename_pattern": "{date}.md",
+        "references_section": "## Consulted",
+    })
+    assert daily_note_resolver.read_discovery_cache("h" * 64)["references_section"] == "## Consulted"

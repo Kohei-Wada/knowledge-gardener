@@ -1,42 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
-import json
-import os
-import subprocess
-import sys
+import datetime as _dt
 
-from ..shared.fs import plugin_root
-from ..shared.hook_io import log
+from ..aggregate.__main__ import aggregate_session
+from ..shared.paths import session_log_path
 from .context import RecapContext
-
-
-def _run_aggregator_json(sid8: str, since: str | None) -> dict | None:
-    root = plugin_root()
-    if not (root / "recap" / "aggregate" / "__main__.py").is_file():
-        return None
-    args = [sys.executable, "-m", "recap.aggregate", "--sid", sid8, "--json"]
-    if since:
-        args += ["--since", since]
-    env = {**os.environ, "PYTHONPATH": str(root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
-    try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=30,
-                              check=False, env=env, cwd=str(root))
-    except (OSError, subprocess.TimeoutExpired) as e:
-        log(f"aggregator failed: {e!r}")
-        return None
-    if proc.returncode != 0:
-        log(f"aggregator exit={proc.returncode} stderr={proc.stderr[:200]!r}")
-        return None
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        log("aggregator JSON parse failed")
-        return None
-    sessions = payload.get("sessions") or []
-    if not sessions:
-        return None
-    return sessions[0]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -55,9 +24,11 @@ class SessionAggregator:
         self._ctx = ctx
 
     def aggregate(self) -> Aggregation | None:
-        s = _run_aggregator_json(self._ctx.sid8, since=None)  # whole-session: Timeline is regenerated & replaced each Stop
-        if not s:
+        today = _dt.date.today()
+        log_path = session_log_path(self._ctx.sid8, today)
+        if not log_path.is_file():
             return None
+        s = aggregate_session(log_path, today)  # whole session; the caller cuts the new slice
         start = s.get("first_hhmm")
         end = s.get("last_hhmm")
         if not start or not end or not s.get("entry_count"):

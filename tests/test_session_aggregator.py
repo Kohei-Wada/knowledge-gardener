@@ -33,17 +33,13 @@ def test_aggregation_none_when_empty(tmp_path, monkeypatch):
     assert SessionAggregator(_ctx("nolog123")).aggregate() is None
 
 
-def test_aggregate_requests_whole_session_ignoring_cursor(monkeypatch):
-    import recap.autorecap.session_aggregator as sa
-    captured = {}
-
-    def fake(sid8, since):
-        captured["since"] = since
-        return {"first_hhmm": "09:00", "last_hhmm": "09:30", "entry_count": 3,
-                "duration_min": 30, "durable_change": True, "timeline": ["- 09:00  Edit a.py"]}
-
-    monkeypatch.setattr(sa, "_run_aggregator_json", fake)
-    ctx = _ctx("abcd1234", since="09:20")
-    agg = sa.SessionAggregator(ctx).aggregate()
-    assert captured["since"] is None
-    assert agg.timeline == ["- 09:00  Edit a.py"]
+def test_aggregate_covers_the_whole_session_ignoring_cursor(tmp_path, monkeypatch):
+    sessions = tmp_path / "knowledge-gardener" / "sessions"
+    sessions.mkdir(parents=True)
+    today = dt.date.today().isoformat()
+    (sessions / f"{today}-abcd1234.log").write_text(
+        "09:00 tool=Edit target=a.py\n09:30 tool=Edit target=b.py\n"
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    agg = SessionAggregator(_ctx("abcd1234", since="09:20")).aggregate()
+    assert agg.timeline == ["- 09:00  Edit a.py", "- 09:30  Edit b.py"]

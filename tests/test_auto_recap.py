@@ -283,9 +283,7 @@ def test_logs_hint_when_discovery_prefixes_vault_basename(tmp_path):
     assert_continue(res.stdout)
     today = _dt.date.today().isoformat()
     assert not (daily / f"{today}.md").exists()
-    log_path = (
-        tmp_path / "fakehome" / ".local" / "state" / "knowledge-gardener" / "auto-recap.log"
-    )
+    log_path = state / "knowledge-gardener" / "auto-recap.log"
     log_content = log_path.read_text(encoding="utf-8")
     assert "daily folder does not exist" in log_content
     assert "hint:" in log_content
@@ -800,7 +798,7 @@ def test_no_commit_when_the_note_already_matches_head(tmp_path, monkeypatch):
     daily_note.commit_and_push(repo, note, "testabcd")
 
     assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout == head
-    log_file = hook_io.LOG_FILE
+    log_file = hook_io.log_path()
     assert not log_file.exists() or "git commit failed" not in log_file.read_text()
 
 
@@ -974,6 +972,40 @@ def test_hit_path_uses_compose_only_prompt(tmp_path):
         "every {{...}} placeholder must be substituted; a leftover literal "
         "(e.g. {{PRIOR_KPT}}) would reach the model unsubstituted"
     )
+
+
+def test_cached_discovery_still_writes_the_references_section(tmp_path):
+    """The cache used to drop references_section, so only the cold-cache pass
+    recorded the notes a session consulted."""
+    vault, daily, _ = make_vault(tmp_path)
+    state = tmp_path / "state"
+    today = _dt.date.today().isoformat()
+    (vault / "notes").mkdir()
+    for name in ("first", "second"):
+        (vault / "notes" / f"{name}.md").write_text(f"# {name}\n")
+    discovery = (
+        "<!-- kg-discovery -->\n"
+        f"folder: {DAILY_FOLDER_REL}\nfilename: {today}.md\n"
+        "filename_pattern: {date}.md\ninsert_before: \n"
+        "references_section: ## Consulted\n"
+        "<!-- /kg-discovery -->\n" + TIMELINE_BODY
+    )
+    env = happy_env(vault, make_fake_claude(tmp_path / "f1", discovery))
+    del env["KG_DAILY_FOLDER"]  # discovery, then the cache, must supply everything
+
+    write_session_log(state, "coldpass", ["09:00 tool=Edit target=a.md",
+                                          "09:00 tool=ReadNote target=notes/first.md"])
+    run_hook({"session_id": "coldpass-uuid"}, env_extra=env, state_home=state)
+    note = daily / f"{today}.md"
+    assert "- [first](../notes/first.md)" in note.read_text()
+
+    env["KG_AUTO_RECAP_CLAUDE_CMD"] = str(make_fake_claude(tmp_path / "f2", _canned_recap_timeline_only()))
+    write_session_log(state, "warmpass", ["10:00 tool=Edit target=b.md",
+                                          "10:00 tool=ReadNote target=notes/second.md"])
+    run_hook({"session_id": "warmpass-uuid"}, env_extra=env, state_home=state)
+    text = note.read_text()
+    assert "- [second](../notes/second.md)" in text
+    assert text.count("## Consulted") == 1
 
 
 def test_readme_change_invalidates_cache(tmp_path):
@@ -1292,4 +1324,4 @@ def test_failed_conflict_check_after_continue_aborts_instead_of_skipping(tmp_pat
 
     assert ["rebase", "--skip"] not in calls
     assert ["rebase", "--abort"] in calls
-    assert "push abandoned" in hook_io.LOG_FILE.read_text()
+    assert "push abandoned" in hook_io.log_path().read_text()
