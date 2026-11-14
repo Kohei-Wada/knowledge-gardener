@@ -52,4 +52,5 @@ class SessionAggregator:
         self._ctx = ctx
 
     def aggregate(self) -> Aggregation | None:
-        return aggregate_transcript(self._ctx.transcript_path, _dt.date.today(), self._ctx.vault)
+        day = _dt.date.fromisoformat(self._ctx.today_str)  # the day the note was resolved for, not a later clock read
+        return aggregate_transcript(self._ctx.transcript_path, day, self._ctx.vault)

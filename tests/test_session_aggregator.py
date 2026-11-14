@@ -51,3 +51,10 @@ def test_read_inside_the_vault_becomes_a_referenced_note(tmp_path):
     agg = SessionAggregator(_ctx(t, vault)).aggregate()
     assert agg.referenced_notes == ["notes/foo.md"]
     assert not any("ReadNote" in line for line in agg.timeline)
+
+
+def test_aggregates_the_day_the_context_was_created_for(tmp_path):
+    t = write_transcript(tmp_path / "t.jsonl", ["10:00 tool=Edit target=a.md"])
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    ctx = RecapContext(sid8="aaaaaaaa", vault=Path("/tmp"), today_str=yesterday, transcript_path=str(t))
+    assert SessionAggregator(ctx).aggregate() is None
