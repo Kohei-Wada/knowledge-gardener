@@ -112,5 +112,3 @@ def test_bash_agent_edit_preserved():
         ("11:00", "Agent", "Explore:look around"),
     ))
     assert out == ["- 11:00  Edit a.py, Bash: git status, Agent→Explore"]
-
-
